@@ -1,0 +1,6 @@
+modLoader="javafml"
+loaderVersion="[4,)"
+license="LGPL-2.1-only"
+[[mods]]
+modId="reforgedembedded"
+version="1.0.0"

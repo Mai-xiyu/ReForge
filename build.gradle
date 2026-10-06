@@ -8,11 +8,28 @@ group = mod_group_id
 version = mod_version
 
 base {
-    archivesName = mod_id
+    archivesName = 'reforge'
 }
 
 java {
     toolchain.languageVersion = JavaLanguageVersion.of(21)
+}
+
+def reforgedRunDir = layout.projectDirectory.dir(providers.gradleProperty('reforgedRunDir').getOrElse('run'))
+
+sourceSets {
+    bootstrap {
+        java.srcDir layout.buildDirectory.dir('generated/bootstrap')
+        compileClasspath += sourceSets.main.compileClasspath
+    }
+    gameTest {
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath += sourceSets.main.output + sourceSets.main.runtimeClasspath
+    }
+    compatibilityTest {
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        resources.setSrcDirs([])
+    }
 }
 
 minecraft {
@@ -30,12 +47,13 @@ minecraft {
 
     runs {
         configureEach {
-            workingDirectory project.file('run')
+            workingDirectory reforgedRunDir.asFile
 
             // logging
             property 'forge.logging.markers', 'REGISTRIES'
             property 'forge.logging.console.level', 'debug'
-            environment 'MOD_CLASSES', "${mod_id}%%${layout.buildDirectory.dir('sourcesSets/main').get().asFile.absolutePath}"
+            // Exercise the installed artifact, including its early bootstrap and locator.
+            environment 'MOD_CLASSES', ''
 
             mods {
                 "${mod_id}" {
@@ -47,6 +65,8 @@ minecraft {
         client {
             property 'forge.enabledGameTestNamespaces', mod_id
             property 'mixin.env.remapRefMap', 'true'
+            property 'reforged.clientSmoke', providers.gradleProperty('clientSmoke').getOrElse('false')
+            property 'reforged.fixtureClientFailure', providers.gradleProperty('fixtureClientFailure').getOrElse('false')
         }
 
         server {
@@ -56,6 +76,8 @@ minecraft {
 
         gameTestServer {
             property 'forge.enabledGameTestNamespaces', mod_id
+            property 'reforged.persistencePhase', providers.gradleProperty('persistencePhase').getOrElse('write')
+            property 'reforged.fixtureFail', providers.gradleProperty('fixtureFailure').getOrElse('false')
         }
 
         data {
@@ -80,6 +102,8 @@ repositories {
 }
 
 dependencies {
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.12.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.12.2'
     // Forge
     minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
 
@@ -99,13 +123,14 @@ dependencies {
     // MixinExtras — NeoForge 20.2.84+ bundles it, Forge does not. NeoForge mod
     // mixins (@WrapOperation etc.) need it on the classpath; the forge artifact
     // self-initializes through its IMixinConnector service.
-    implementation 'io.github.llamalad7:mixinextras-forge:0.5.4'
+    jarJar(implementation('io.github.llamalad7:mixinextras-forge:0.5.4')) {
+        jarJar.ranged(it, '[0.5.4,0.5.5)')
+    }
 
     // jopt-simple
     implementation('net.sf.jopt-simple:jopt-simple:5.0.4') { version { strictly '5.0.4' } }
 
     // ── Test Mods (Forge) ──────────────────────────────────
-    runtimeOnly "maven.modrinth:jei:rsCHKGSa"                              // JEI — Forge reference
 
     // ── Test Mods (NeoForge) ───────────────────────────────
     // Each mod exercises different NeoForge API surfaces:
@@ -113,10 +138,13 @@ dependencies {
     //   Waystones   → Registries, Network payloads, Data attachments, Config
     //   Balm        → Abstraction layer lib, Registries, Events, Network
     compileOnly "maven.modrinth:balm:21.0.41+neoforge-1.21.1"            // Compile against Balm API; do not bundle classes
-    runtimeOnly "maven.modrinth:jade:15.10.5+neoforge"                     // Jade — tooltip overlay
-    runtimeOnly "maven.modrinth:waystones:21.1.19+neoforge-1.21.1"        // Waystones — teleport
-    runtimeOnly "maven.modrinth:balm:21.0.41+neoforge-1.21.1"             // Balm — Waystones dep (>= 21.0.39 required)
-    runtimeOnly "maven.modrinth:create:n7NADxiG"                           // Create — kinetics & automation
+    if (providers.gradleProperty('compatibilityMods').getOrElse('false').toBoolean()) {
+        runtimeOnly "maven.modrinth:jei:rsCHKGSa"
+        runtimeOnly "maven.modrinth:jade:15.10.5+neoforge"
+        runtimeOnly "maven.modrinth:waystones:21.1.19+neoforge-1.21.1"
+        runtimeOnly "maven.modrinth:balm:21.0.41+neoforge-1.21.1"
+        runtimeOnly "maven.modrinth:create:n7NADxiG"
+    }
 }
 
 tasks.named('processResources', ProcessResources).configure {
@@ -140,6 +168,7 @@ tasks.named('processResources', ProcessResources).configure {
 }
 
 tasks.named('jar', Jar).configure {
+    from('LICENSE') { into 'META-INF' }
     manifest {
         attributes([
                 "Specification-Title"     : mod_id,
@@ -148,9 +177,29 @@ tasks.named('jar', Jar).configure {
                 "Implementation-Title"    : project.name,
                 "Implementation-Version"  : project.jar.archiveVersion,
                 "Implementation-Vendor"   : mod_authors,
-                "Implementation-Timestamp": new Date().format("yyyy-MM-dd'T'HH:mm:ssZ"),
                 "MixinConfigs"            : "reforged.mixins.json"
         ])
+    }
+}
+
+tasks.withType(AbstractArchiveTask).configureEach {
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
+
+// Only the installable release belongs in libs; these remain build inputs.
+tasks.withType(Jar).configureEach {
+    destinationDirectory = layout.buildDirectory.dir('intermediates/jars')
+}
+
+tasks.named('test', Test).configure {
+    useJUnitPlatform()
+    testLogging { events 'failed', 'skipped' }
+    afterSuite { descriptor, result ->
+        if (!descriptor.parent) {
+            logger.lifecycle("Regression tests: ${result.testCount} executed, ${result.failedTestCount} failed, ${result.skippedTestCount} skipped")
+            if (result.testCount == 0) throw new GradleException('No regression tests executed')
+        }
     }
 }
 
@@ -167,25 +216,204 @@ tasks.register('patchNeoForgeMods', JavaExec) {
     }
     classpath = sourceSets.main.runtimeClasspath
     mainClass = 'org.xiyu.reforged.core.NeoForgeModPatcher'
-    args layout.projectDirectory.dir('run/mods').asFile.absolutePath
+    args reforgedRunDir.dir('mods').asFile.absolutePath
 }
 
 tasks.register('copyReForgedDevMod', Copy) {
     group = 'reforged'
     description = 'Copies the current ReForged jar into run/mods so Forge userdev discovers it consistently.'
-    dependsOn tasks.named('jar')
-    from(tasks.named('jar').flatMap { it.archiveFile })
-    into layout.projectDirectory.dir('run/mods')
+    dependsOn tasks.named('releaseJar')
+    from(tasks.named('releaseJar').flatMap { it.archiveFile })
+    into reforgedRunDir.dir('mods')
     rename { "${mod_id}-dev.jar" }
 }
 
-tasks.matching { it.name in ['runClient', 'runServer', 'runGameTestServer'] }.configureEach {
+tasks.register('gameTestJar', Jar) {
+    dependsOn tasks.named('jarJar'), tasks.named('gameTestClasses')
+    archiveClassifier = 'gametest'
+    from({ zipTree(tasks.named('jarJar').get().archiveFile.get().asFile) }) { exclude 'META-INF/MANIFEST.MF' }
+    from sourceSets.gameTest.output
+    manifest.from tasks.named('jar').get().manifest
+}
+
+tasks.register('copyReForgedGameTestMod', Copy) {
+    dependsOn tasks.named('gameTestBootstrapJar')
+    from tasks.named('gameTestBootstrapJar').flatMap { it.archiveFile }
+    into reforgedRunDir.dir('mods')
+    rename { "${mod_id}-dev.jar" }
+}
+
+tasks.matching { it.name in ['runClient', 'runServer'] }.configureEach {
     dependsOn tasks.named('copyReForgedDevMod')
-    dependsOn tasks.named('patchNeoForgeMods')
+}
+tasks.matching { it.name == 'runGameTestServer' }.configureEach {
+    dependsOn tasks.named('copyReForgedGameTestMod')
+    dependsOn tasks.named('copyCompatibilityFixture')
+    def startedAt = 0L
+    doFirst { startedAt = System.currentTimeMillis() }
+    doLast {
+        def log = reforgedRunDir.file('logs/latest.log').asFile
+        if (!log.isFile() || log.lastModified() < startedAt) throw new GradleException('No fresh GameTest log')
+        def result = log.getText('UTF-8') =~ /All (\d+) required tests passed/
+        if (!result.find() || result.group(1).toInteger() < 7) throw new GradleException('Required attachment and loading GameTests did not execute and pass')
+        logger.lifecycle("Dedicated-server GameTests: ${result.group(1)} required tests passed")
+    }
+}
+
+tasks.register('embeddedFixtureJar', Jar) {
+    dependsOn tasks.named('compatibilityTestClasses')
+    archiveClassifier = 'fixture-embedded'
+    from(sourceSets.compatibilityTest.output) { include 'fixture/EmbeddedNeoMod.class' }
+    from 'src/compatibilityTest/resources/embedded'
+}
+tasks.register('compatibilityFixtureJar', Jar) {
+    dependsOn tasks.named('embeddedFixtureJar')
+    archiveClassifier = 'fixture'
+    from(sourceSets.compatibilityTest.output) { include 'fixture/MinimalNeoMod.class', 'fixture/ClientSmoke*.class' }
+    from 'src/compatibilityTest/resources/parent'
+    from(tasks.named('embeddedFixtureJar').flatMap { it.archiveFile }) {
+        into 'META-INF/jarjar'
+        rename { 'embedded.jar' }
+    }
+}
+tasks.register('copyCompatibilityFixture', Copy) {
+    dependsOn tasks.named('compatibilityFixtureJar')
+    from tasks.named('compatibilityFixtureJar').flatMap { it.archiveFile }
+    into reforgedRunDir.dir('mods')
+    rename { 'reforged-fixture.jar' }
+}
+
+if (providers.gradleProperty('clientSmoke').getOrElse('false').toBoolean()) {
+    tasks.matching { it.name == 'runClient' }.configureEach {
+        dependsOn tasks.named('copyCompatibilityFixture')
+        def startedAt = 0L
+        doFirst {
+            startedAt = System.currentTimeMillis()
+            // Fresh smoke instances must not wait at Minecraft's first-run prompt.
+            def options = reforgedRunDir.file('options.txt').asFile
+            if (!options.exists()) options.setText('onboardAccessibility:false\n', 'UTF-8')
+        }
+        doLast {
+            def result = reforgedRunDir.file('client-smoke-result.txt').asFile
+            if (!result.isFile() || result.lastModified() < startedAt
+                    || !result.getText('UTF-8').contains('screen=TitleScreen')) {
+                throw new GradleException('Client did not reach the title screen with initialized NeoForge fixtures')
+            }
+            logger.lifecycle('Client smoke: title screen and NeoForge initialization verified')
+        }
+    }
 }
 
 sourceSets.each {
     def dir = layout.buildDirectory.dir("sourcesSets/$it.name")
     it.output.resourcesDir = dir
     it.java.destinationDirectory = dir
+}
+
+// Generate the early-service subset from the runtime sources, using a disjoint
+// package. Java module layers must never export the runtime shim packages twice.
+tasks.register('generateBootstrapSources') {
+    def sources = files(fileTree('src/main/java/org/xiyu/reforged/asm'),
+            ['ReForgedTransformationService', 'ReForgedModLocator', 'NeoForgeModPatcher',
+             'ModDescriptorConverter', 'NeoMixinExtractor'].collect { file("src/main/java/org/xiyu/reforged/core/${it}.java") })
+    inputs.files sources
+    def destination = layout.buildDirectory.dir('generated/bootstrap')
+    outputs.dir destination
+    doLast {
+        sources.each { source ->
+            def packageName = source.parentFile.name
+            def output = destination.get().file("org/xiyu/reforged/bootstrap/${packageName}/${source.name}").asFile
+            output.parentFile.mkdirs()
+            output.setText(source.getText('UTF-8')
+                    .replace('org.xiyu.reforged.asm', 'org.xiyu.reforged.bootstrap.asm')
+                    .replace('org.xiyu.reforged.core', 'org.xiyu.reforged.bootstrap.core'), 'UTF-8')
+        }
+    }
+}
+tasks.named('compileBootstrapJava') { dependsOn tasks.named('generateBootstrapSources') }
+tasks.named('jarJar', Jar) { archiveClassifier = 'runtime' }
+
+tasks.register('releaseJar', Jar) {
+    dependsOn tasks.named('bootstrapClasses'), tasks.named('jarJar')
+    archiveClassifier = ''
+    destinationDirectory = layout.buildDirectory.dir('libs')
+    from sourceSets.bootstrap.output
+    from('LICENSE') { into 'META-INF' }
+    from('src/main/resources/reforged') { into 'reforged' }
+    from(tasks.named('jarJar').flatMap { it.archiveFile }) {
+        into 'META-INF/reforged'
+        rename { 'reforged-runtime.jar' }
+    }
+    manifest { attributes('Automatic-Module-Name': 'org.xiyu.reforged.bootstrap', 'FMLModType': 'LIBRARY') }
+}
+tasks.register('gameTestBootstrapJar', Jar) {
+    dependsOn tasks.named('bootstrapClasses'), tasks.named('gameTestJar')
+    archiveClassifier = 'gametest-bootstrap'
+    from sourceSets.bootstrap.output
+    from('src/main/resources/reforged') { into 'reforged' }
+    from(tasks.named('gameTestJar').flatMap { it.archiveFile }) {
+        into 'META-INF/reforged'
+        rename { 'reforged-runtime.jar' }
+    }
+    manifest { attributes('Automatic-Module-Name': 'org.xiyu.reforged.bootstrap', 'FMLModType': 'LIBRARY') }
+}
+tasks.named('assemble') { dependsOn tasks.named('releaseJar') }
+
+tasks.register('verifyReleaseJar') {
+    group = 'verification'
+    description = 'Checks the installable bootstrap/runtime layout and records its SHA-256.'
+    dependsOn tasks.named('releaseJar')
+    doLast {
+        def artifact = tasks.named('releaseJar').get().archiveFile.get().asFile
+        new java.util.jar.JarFile(artifact).withCloseable { outer ->
+            def requireEntry = { String name ->
+                def entry = outer.getJarEntry(name)
+                if (entry == null) throw new GradleException("Release JAR missing ${name}")
+                entry
+            }
+            [
+                'cpw.mods.modlauncher.api.ITransformationService': 'ReForgedTransformationService',
+                'net.minecraftforge.forgespi.locating.IModLocator': 'ReForgedModLocator'
+            ].each { service, implementation ->
+                def entry = requireEntry("META-INF/services/${service}")
+                def expected = "org.xiyu.reforged.bootstrap.core.${implementation}"
+                def declaration = outer.getInputStream(entry).withCloseable { it.getText('UTF-8').trim() }
+                if (declaration != expected) throw new GradleException("Invalid bootstrap service ${service}")
+                requireEntry(expected.replace('.', '/') + '.class')
+            }
+            requireEntry('reforged/mappings.json')
+            requireEntry('META-INF/LICENSE')
+            def outerClasses = outer.stream().filter { it.name.endsWith('.class') }.toList()
+            if (outerClasses.any { !it.name.startsWith('org/xiyu/reforged/bootstrap/') }) {
+                throw new GradleException('Runtime classes leaked into the bootstrap module')
+            }
+            def runtime = requireEntry('META-INF/reforged/reforged-runtime.jar')
+            new java.util.jar.JarInputStream(outer.getInputStream(runtime)).withCloseable { inner ->
+                if (inner.manifest?.mainAttributes?.getValue('MixinConfigs') != 'reforged.mixins.json') {
+                    throw new GradleException('Runtime Mixin configuration missing from manifest')
+                }
+                def names = new HashSet<String>()
+                def entry
+                while ((entry = inner.nextJarEntry) != null) names.add(entry.name)
+                ['META-INF/mods.toml', 'reforged.mixins.json', 'META-INF/jarjar/metadata.json',
+                 'META-INF/jarjar/mixinextras-forge-0.5.4.jar', 'org/xiyu/reforged/Reforged.class'].each {
+                    if (!names.contains(it)) throw new GradleException("Embedded runtime missing ${it}")
+                }
+                if (names.any { it.startsWith('org/xiyu/reforged/gametest/') || it.startsWith('org/xiyu/reforged/bootstrap/') || it.startsWith('fixture/') }
+                        || names.contains('META-INF/services/cpw.mods.modlauncher.api.ITransformationService')
+                        || names.contains('META-INF/services/net.minecraftforge.forgespi.locating.IModLocator')) {
+                    throw new GradleException('Test classes or early-service registrations leaked into runtime')
+                }
+            }
+        }
+        def digest = java.security.MessageDigest.getInstance('SHA-256')
+        artifact.withInputStream { input ->
+            byte[] buffer = new byte[8192]
+            int count
+            while ((count = input.read(buffer)) != -1) digest.update(buffer, 0, count)
+        }
+        def hash = java.util.HexFormat.of().formatHex(digest.digest())
+        new File(artifact.parentFile, artifact.name + '.sha256').setText("${hash}  ${artifact.name}\n", 'UTF-8')
+        logger.lifecycle("Verified release artifact: ${artifact.name}, SHA-256 ${hash}")
+    }
 }

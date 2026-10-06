@@ -3,7 +3,10 @@ package org.xiyu.reforged.shim.attachment;
 import com.mojang.logging.LogUtils;
 import org.slf4j.Logger;
 
+import java.lang.ref.ReferenceQueue;
+import java.lang.ref.WeakReference;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
@@ -37,7 +40,9 @@ public interface IAttachmentHolder {
      * Set attached data.
      */
     default <T> T setData(AttachmentType<T> type, T value) {
-        return GlobalAttachmentStorage.setData(this, type, value);
+        T previous = GlobalAttachmentStorage.setData(this, type, value);
+        syncData(type);
+        return previous;
     }
 
     /**
@@ -51,7 +56,9 @@ public interface IAttachmentHolder {
      * Remove attached data.
      */
     default <T> T removeData(AttachmentType<T> type) {
-        return GlobalAttachmentStorage.removeData(this, type);
+        T previous = GlobalAttachmentStorage.removeData(this, type);
+        syncData(type);
+        return previous;
     }
 
     /**
@@ -68,7 +75,7 @@ public interface IAttachmentHolder {
     default <T> T removeData(Supplier<AttachmentType<T>> type) { return removeData(type.get()); }
 
     default <T> Optional<T> getExistingData(AttachmentType<T> type) {
-        return hasData(type) ? Optional.of(getData(type)) : Optional.empty();
+        return Optional.ofNullable(getExistingDataOrNull(type));
     }
 
     default <T> T getExistingDataOrNull(AttachmentType<T> type) {
@@ -93,9 +100,9 @@ public interface IAttachmentHolder {
     // ─── Global data storage for IAttachmentHolder default methods ──────
 
     /**
-     * Global storage backed by a WeakIdentityHashMap-like structure using
-     * a ConcurrentHashMap&lt;WeakRef, Map&gt; pattern. The keys use
-     * System.identityHashCode + WeakReference to avoid memory leaks.
+     * Global storage backed by weak identity references. Keys retain only the
+     * identity hash and a weak reference, and are removed through a
+     * ReferenceQueue. This avoids both leaks and identity-hash collisions.
      *
      * <p>When classes have an injected {@link AttachmentHolder.AsField} field via Mixin,
      * they should override the default methods to delegate to that field directly.</p>
@@ -107,17 +114,17 @@ public interface IAttachmentHolder {
     final class GlobalAttachmentStorage {
         private static final Logger LOGGER = LogUtils.getLogger();
 
-        // Use a WeakHashMap-like approach: key = holder object (via weak identity)
-        // For simplicity, we use identityHashCode but pair it with a cleanup mechanism
-        private static final Map<Integer, HolderData> STORAGE = new ConcurrentHashMap<>();
+        private static final ReferenceQueue<IAttachmentHolder> QUEUE = new ReferenceQueue<>();
+        private static final Map<IdentityWeakReference, HolderData> STORAGE = new ConcurrentHashMap<>();
 
         private static HolderData getOrCreate(IAttachmentHolder holder) {
-            int key = System.identityHashCode(holder);
-            return STORAGE.computeIfAbsent(key, k -> new HolderData());
+            expungeStaleEntries();
+            return STORAGE.computeIfAbsent(new IdentityWeakReference(holder, QUEUE), ignored -> new HolderData());
         }
 
         private static HolderData getIfPresent(IAttachmentHolder holder) {
-            return STORAGE.get(System.identityHashCode(holder));
+            expungeStaleEntries();
+            return STORAGE.get(new IdentityWeakReference(holder, null));
         }
 
         @SuppressWarnings("unchecked")
@@ -138,7 +145,15 @@ public interface IAttachmentHolder {
         }
 
         @SuppressWarnings("unchecked")
+        static <T> T getExistingDataOrNull(IAttachmentHolder holder, AttachmentType<T> type) {
+            HolderData data = getIfPresent(holder);
+            return data == null ? null : (T) data.attachments.get(type);
+        }
+
+        @SuppressWarnings("unchecked")
         static <T> T setData(IAttachmentHolder holder, AttachmentType<T> type, T value) {
+            Objects.requireNonNull(type, "type");
+            Objects.requireNonNull(value, "value");
             return (T) getOrCreate(holder).attachments.put(type, value);
         }
 
@@ -165,7 +180,36 @@ public interface IAttachmentHolder {
          * Remove all data associated with a holder (called when entity is removed etc.)
          */
         public static void cleanup(IAttachmentHolder holder) {
-            STORAGE.remove(System.identityHashCode(holder));
+            expungeStaleEntries();
+            STORAGE.remove(new IdentityWeakReference(holder, null));
+        }
+
+        private static void expungeStaleEntries() {
+            IdentityWeakReference reference;
+            while ((reference = (IdentityWeakReference) QUEUE.poll()) != null) {
+                STORAGE.remove(reference);
+            }
+        }
+
+        private static final class IdentityWeakReference extends WeakReference<IAttachmentHolder> {
+            private final int identityHash;
+
+            private IdentityWeakReference(IAttachmentHolder referent, ReferenceQueue<IAttachmentHolder> queue) {
+                super(referent, queue);
+                identityHash = System.identityHashCode(referent);
+            }
+
+            @Override
+            public int hashCode() {
+                return identityHash;
+            }
+
+            @Override
+            public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityWeakReference reference)) return false;
+                return get() != null && get() == reference.get();
+            }
         }
 
         /** Per-holder storage container */

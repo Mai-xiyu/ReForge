@@ -9,6 +9,8 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,6 +20,7 @@ import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.security.MessageDigest;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 
@@ -69,8 +72,9 @@ public final class NeoModClassLoader {
             // nest their own JiJ entries (e.g. ywzj_vehicle → simplebedrockmodel → mae).
             Path jijTemp = Files.createTempDirectory("reforged-jij-");
             jijTemp.toFile().deleteOnExit();
+            java.util.Map<String, String> nestedIdentities = new java.util.HashMap<>();
             for (Path jar : jars) {
-                extractJiJRecursively(jar, jijTemp, urls, extractedJiJJars, 0);
+                extractJiJRecursively(jar, jijTemp, urls, extractedJiJJars, nestedIdentities, 0);
             }
 
             // Classes kept inside the discovery placeholder jars (mixin classes,
@@ -157,20 +161,22 @@ public final class NeoModClassLoader {
 
                 @Override
                 protected Class<?> findClass(String name) throws ClassNotFoundException {
-                    Thread.currentThread().setContextClassLoader(this);
+                    Thread thread = Thread.currentThread();
+                    ClassLoader previousContextLoader = thread.getContextClassLoader();
+                    thread.setContextClassLoader(this);
 
-                    String resourceName = name.replace('.', '/').concat(".class");
-                    URL resource = findResource(resourceName);
-                    if (resource == null) {
-                        throw new ClassNotFoundException(name);
-                    }
-
-                    try (InputStream is = resource.openStream()) {
-                        byte[] original = is.readAllBytes();
-                        byte[] rewritten = bytecodeRewriter.rewrite(original);
-                        return defineClass(name, rewritten, 0, rewritten.length);
-                    } catch (Exception e) {
-                        throw new ClassNotFoundException(name, e);
+                    try {
+                        String resourceName = name.replace('.', '/').concat(".class");
+                        URL resource = findResource(resourceName);
+                        if (resource == null) throw new ClassNotFoundException(name);
+                        try (InputStream is = resource.openStream()) {
+                            byte[] rewritten = bytecodeRewriter.rewrite(is.readAllBytes());
+                            return defineClass(name, rewritten, 0, rewritten.length);
+                        } catch (java.io.IOException e) {
+                            throw new ClassNotFoundException(name, e);
+                        }
+                    } finally {
+                        thread.setContextClassLoader(previousContextLoader);
                     }
                 }
 
@@ -209,41 +215,64 @@ public final class NeoModClassLoader {
      * then recurse into each extracted jar (bounded depth).
      */
     private static void extractJiJRecursively(Path jar, Path jijTemp, List<URL> urls,
-                                              List<Path> extractedJiJJars, int depth) {
+                                              List<Path> extractedJiJJars, java.util.Map<String, String> identities, int depth) {
         if (depth > 5) {
-            LOGGER.warn("[ReForged] JiJ nesting too deep in {} — stopping at depth {}", jar.getFileName(), depth);
-            return;
+            throw new IllegalStateException("JiJ nesting exceeds supported depth: " + jar);
         }
         List<Path> extractedHere = new ArrayList<>();
         try (JarFile jarFile = new JarFile(jar.toFile())) {
-            var entries = jarFile.entries();
-            while (entries.hasMoreElements()) {
-                JarEntry entry = entries.nextElement();
+            for (JarEntry entry : jarFile.stream().sorted(java.util.Comparator.comparing(JarEntry::getName)).toList()) {
                 String name = entry.getName();
                 if (name.startsWith("META-INF/jarjar/") && name.endsWith(".jar") && !entry.isDirectory()) {
                     String fileName = name.substring(name.lastIndexOf('/') + 1);
-                    Path extracted = jijTemp.resolve(fileName);
-                    if (Files.exists(extracted)) {
-                        continue; // same library bundled by multiple mods
-                    }
                     try (InputStream is = jarFile.getInputStream(entry)) {
-                        Files.copy(is, extracted, StandardCopyOption.REPLACE_EXISTING);
+                        byte[] bytes = is.readAllBytes();
+                        String digest = sha256(bytes);
+                        String identity = nestedIdentity(jarFile, name, fileName);
+                        String previousDigest = identities.putIfAbsent(identity, digest);
+                        if (previousDigest != null) {
+                            if (previousDigest.equals(digest)) continue;
+                            throw new IllegalStateException("Conflicting embedded dependency " + identity
+                                    + " in " + jar + "; automatic version selection is not supported");
+                        }
+                        Path extracted = jijTemp.resolve(digest + ".jar");
+                        if (Files.exists(extracted)) {
+                            continue;
+                        }
+                        Files.write(extracted, bytes);
+                        extracted.toFile().deleteOnExit();
+                        urls.add(extracted.toUri().toURL());
+                        extractedHere.add(extracted);
+                        if (extractedJiJJars != null) {
+                            extractedJiJJars.add(extracted);
+                        }
+                        LOGGER.info("[ReForged] Extracted JiJ dependency: {} from {} (depth {})",
+                                extracted.getFileName(), jar.getFileName(), depth);
                     }
-                    extracted.toFile().deleteOnExit();
-                    urls.add(extracted.toUri().toURL());
-                    extractedHere.add(extracted);
-                    if (extractedJiJJars != null) {
-                        extractedJiJJars.add(extracted);
-                    }
-                    LOGGER.info("[ReForged] Extracted JiJ dependency: {} from {} (depth {})",
-                            fileName, jar.getFileName(), depth);
                 }
             }
         } catch (Exception e) {
-            LOGGER.warn("[ReForged] Failed to extract JiJ from {}: {}", jar.getFileName(), e.getMessage());
+            throw new IllegalStateException("Cannot extract JiJ dependencies from " + jar, e);
         }
         for (Path nested : extractedHere) {
-            extractJiJRecursively(nested, jijTemp, urls, extractedJiJJars, depth + 1);
+            extractJiJRecursively(nested, jijTemp, urls, extractedJiJJars, identities, depth + 1);
+        }
+    }
+
+    private static String nestedIdentity(JarFile jar, String entryName, String fallback) throws java.io.IOException {
+        JarEntry metadata = jar.getJarEntry("META-INF/jarjar/metadata.json");
+        if (metadata == null) return fallback;
+        try (InputStream input = jar.getInputStream(metadata)) {
+            var entries = com.google.gson.JsonParser.parseString(new String(input.readAllBytes(), StandardCharsets.UTF_8))
+                    .getAsJsonObject().getAsJsonArray("jars");
+            for (var candidate : entries) {
+                var item = candidate.getAsJsonObject();
+                if (entryName.equals(item.get("path").getAsString())) {
+                    var identifier = item.getAsJsonObject("identifier");
+                    return identifier.get("group").getAsString() + ":" + identifier.get("artifact").getAsString();
+                }
+            }
+            throw new IllegalStateException("Embedded JAR missing from JiJ metadata: " + entryName);
         }
     }
 
@@ -282,61 +311,98 @@ public final class NeoModClassLoader {
     }
 
     /**
-     * Extract a mod jar into a cache directory keyed by file name, size and
-     * mtime. Re-uses the cache when the jar is unchanged.
+     * Extract a mod jar into a cache directory keyed by a content digest and
+     * cache format version. A lock and completion marker make concurrent
+     * loader creation safe.
      *
      * @return the extraction root directory, or null on failure
      */
     private static Path extractJarToCache(Path jar) {
         try {
-            long size = Files.size(jar);
-            long mtime = Files.getLastModifiedTime(jar).toMillis();
+            String digest = sha256(jar);
             String dirName = jar.getFileName().toString().replaceAll("[^A-Za-z0-9._-]", "_")
-                    + "-" + Long.toHexString(size) + "-" + Long.toHexString(mtime);
+                    + "-v2-" + digest;
             Path cacheRoot = Path.of(System.getProperty("user.dir", "."))
                     .resolve(".reforged").resolve("extracted");
             Path target = cacheRoot.resolve(dirName);
             Path marker = target.resolve(".reforged-complete");
+            Path lockPath = cacheRoot.resolve(dirName + ".lock");
+            Files.createDirectories(cacheRoot);
 
-            if (Files.isRegularFile(marker)) {
-                LOGGER.debug("[ReForged] Using cached extraction for {}", jar.getFileName());
+            try (FileChannel channel = FileChannel.open(lockPath,
+                    java.nio.file.StandardOpenOption.CREATE,
+                    java.nio.file.StandardOpenOption.WRITE);
+                 FileLock ignored = channel.lock()) {
+                if (Files.isRegularFile(marker)) {
+                    LOGGER.debug("[ReForged] Using cached extraction for {}", jar.getFileName());
+                    return target;
+                }
+
+                // (Re-)extract: clear any partial leftovers first.
+                if (Files.exists(target)) {
+                    deleteRecursively(target);
+                }
+                Files.createDirectories(target);
+
+                int files = 0;
+                try (JarFile jarFile = new JarFile(jar.toFile())) {
+                    var entries = jarFile.entries();
+                    while (entries.hasMoreElements()) {
+                        JarEntry entry = entries.nextElement();
+                        Path out = target.resolve(entry.getName()).normalize();
+                        if (!out.startsWith(target)) {
+                            continue; // zip-slip guard
+                        }
+                        if (entry.isDirectory()) {
+                            Files.createDirectories(out);
+                            continue;
+                        }
+                        Files.createDirectories(out.getParent());
+                        try (InputStream is = jarFile.getInputStream(entry)) {
+                            Files.copy(is, out, StandardCopyOption.REPLACE_EXISTING);
+                        }
+                        files++;
+                    }
+                }
+                Path markerTmp = target.resolve(".reforged-complete.tmp");
+                Files.writeString(markerTmp, "version=2\nsha256=" + digest + "\n");
+                try {
+                    Files.move(markerTmp, marker, StandardCopyOption.ATOMIC_MOVE);
+                } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                    Files.move(markerTmp, marker, StandardCopyOption.REPLACE_EXISTING);
+                }
+                LOGGER.info("[ReForged] Extracted {} ({} files) to {}", jar.getFileName(), files, target);
                 return target;
             }
-
-            // (Re-)extract: clear any partial leftovers first.
-            if (Files.exists(target)) {
-                deleteRecursively(target);
-            }
-            Files.createDirectories(target);
-
-            int files = 0;
-            try (JarFile jarFile = new JarFile(jar.toFile())) {
-                var entries = jarFile.entries();
-                while (entries.hasMoreElements()) {
-                    JarEntry entry = entries.nextElement();
-                    Path out = target.resolve(entry.getName()).normalize();
-                    if (!out.startsWith(target)) {
-                        continue; // zip-slip guard
-                    }
-                    if (entry.isDirectory()) {
-                        Files.createDirectories(out);
-                        continue;
-                    }
-                    Files.createDirectories(out.getParent());
-                    try (InputStream is = jarFile.getInputStream(entry)) {
-                        Files.copy(is, out, StandardCopyOption.REPLACE_EXISTING);
-                    }
-                    files++;
-                }
-            }
-            Files.writeString(marker, "ok");
-            LOGGER.info("[ReForged] Extracted {} ({} files) to {}", jar.getFileName(), files, target);
-            return target;
         } catch (Exception e) {
             LOGGER.warn("[ReForged] Extraction failed for {} — falling back to jar URL: {}",
                     jar.getFileName(), e.getMessage());
             return null;
         }
+    }
+
+    private static String sha256(Path path) throws Exception {
+        try (InputStream input = Files.newInputStream(path)) {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = input.read(buffer)) >= 0) {
+                if (read > 0) digest.update(buffer, 0, read);
+            }
+            return toHex(digest.digest());
+        }
+    }
+
+    private static String sha256(byte[] bytes) throws Exception {
+        return toHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+    }
+
+    private static String toHex(byte[] bytes) {
+        StringBuilder result = new StringBuilder(bytes.length * 2);
+        for (byte value : bytes) {
+            result.append(String.format(java.util.Locale.ROOT, "%02x", value));
+        }
+        return result.toString();
     }
 
     private static void deleteRecursively(Path root) {

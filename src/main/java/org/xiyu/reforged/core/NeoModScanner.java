@@ -54,11 +54,11 @@ public final class NeoModScanner {
                         result.add(new ModInfo(scanner.modId, className));
                     }
                 } catch (Exception e) {
-                    // Skip unreadable class files
+                    throw new IllegalStateException("Cannot scan mod class " + entry.getName() + " in " + jarPath, e);
                 }
             }
         } catch (Exception e) {
-            LOGGER.error("[ReForged] Failed to scan JAR: {}", jarPath.getFileName(), e);
+            throw new IllegalStateException("Cannot discover required mod entrypoints in " + jarPath, e);
         }
         return result;
     }
@@ -86,11 +86,11 @@ public final class NeoModScanner {
                     FullAnnotationScanner scanner = new FullAnnotationScanner(scanData);
                     reader.accept(scanner, ClassReader.SKIP_CODE | ClassReader.SKIP_FRAMES);
                 } catch (Exception e) {
-                    // Skip unreadable class files
+                    throw new IllegalStateException("Cannot scan annotations in " + entry.getName() + " in " + jarPath, e);
                 }
             }
         } catch (Exception e) {
-            LOGGER.error("[ReForged] Failed to scan JAR annotations: {}", jarPath.getFileName(), e);
+            throw new IllegalStateException("Cannot build required annotation metadata for " + jarPath, e);
         }
         return scanData;
     }

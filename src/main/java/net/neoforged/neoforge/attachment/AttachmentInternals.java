@@ -14,6 +14,7 @@ public final class AttachmentInternals {
         initialized = true;
         MinecraftForge.EVENT_BUS.addListener(AttachmentInternals::onPlayerClone);
         MinecraftForge.EVENT_BUS.addListener(AttachmentInternals::onLivingConvert);
+        MinecraftForge.EVENT_BUS.addListener(org.xiyu.reforged.bridge.LevelAttachmentPersistence::onLoad);
     }
 
     public static void copyEntityAttachments(Entity from, Entity to, boolean isDeath) {

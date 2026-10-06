@@ -40,8 +40,8 @@ import java.util.regex.Pattern;
  * collects, for each mixin config:</p>
  *
  * <ul>
- *   <li>the config JSON itself (with {@code required} relaxed and a missing
- *       refmap reference stripped),</li>
+ *   <li>the config JSON itself (preserving its required/optional contract and
+ *       stripping only a missing refmap reference),</li>
  *   <li>the mixin classes plus the <b>transitive closure</b> of mod classes
  *       they reference (interfaces they implement, helper classes invoked from
  *       injected method bodies, the mixin plugin, …), rewritten through
@@ -129,8 +129,7 @@ public final class NeoMixinExtractor {
         for (String configName : configNames) {
             JarEntry configEntry = jar.getJarEntry(configName);
             if (configEntry == null) {
-                log.accept("Mixin config " + configName + " declared but missing from jar — skipped");
-                continue;
+                throw new IllegalStateException("Declared mixin config is missing: " + configName);
             }
             String json = new String(readEntry(jar, configEntry), StandardCharsets.UTF_8);
             try {
@@ -146,7 +145,7 @@ public final class NeoMixinExtractor {
                         if (jarClasses.containsKey(cls)) {
                             seedClasses.add(cls);
                         } else {
-                            log.accept("Mixin class " + cls + " not found in jar (config " + configName + ")");
+                            throw new IllegalStateException("Missing mixin class " + cls + " in " + configName);
                         }
                     }
                 }
@@ -154,18 +153,10 @@ public final class NeoMixinExtractor {
                     String plugin = config.get("plugin").getAsString().replace('.', '/');
                     if (jarClasses.containsKey(plugin)) {
                         seedClasses.add(plugin);
+                    } else {
+                        throw new IllegalStateException("Missing mixin plugin " + plugin + " in " + configName);
                     }
                 }
-
-                // Soften failure handling: a NeoForge mixin that cannot apply on
-                // Forge should not hard-crash the whole game. defaultRequire=0
-                // additionally downgrades injector failures (e.g. targets that
-                // only exist in NeoForge-patched vanilla code) to debug logs.
-                config.addProperty("required", false);
-                JsonObject injectors = config.has("injectors")
-                        ? config.getAsJsonObject("injectors") : new JsonObject();
-                injectors.addProperty("defaultRequire", 0);
-                config.add("injectors", injectors);
 
                 // Keep the refmap only if it actually exists in the jar.
                 if (config.has("refmap")) {
@@ -181,12 +172,12 @@ public final class NeoMixinExtractor {
                 rewrittenConfigs.put(configName, GSON.toJson(config));
                 keptConfigNames.add(configName);
             } catch (Exception e) {
-                log.accept("Failed to parse mixin config " + configName + ": " + e.getMessage());
+                throw new IllegalStateException("Invalid mixin config " + configName, e);
             }
         }
 
         if (seedClasses.isEmpty()) {
-            return new Result(Map.of(), Map.of(), Map.of(), List.of());
+            return new Result(Map.of(), rewrittenConfigs, extraResources, keptConfigNames);
         }
 
         // ServiceLoader implementations must also live in the placeholder:
@@ -229,8 +220,8 @@ public final class NeoMixinExtractor {
                 }
             }
         }
-        if (closure.size() >= MAX_CLOSURE_SIZE) {
-            log.accept("Mixin closure hit cap of " + MAX_CLOSURE_SIZE + " classes — placeholder may be incomplete");
+        if (!queue.isEmpty()) {
+            throw new IllegalStateException("Mixin closure exceeds " + MAX_CLOSURE_SIZE + " classes");
         }
 
         // Rewrite all closure classes for the Forge classpath.
@@ -239,7 +230,12 @@ public final class NeoMixinExtractor {
         Map<String, byte[]> rewrittenByInternal = new HashMap<>();
         for (String internal : closure) {
             byte[] original = jarClasses.get(internal);
-            byte[] rewritten = rewriter.rewrite(original);
+            BytecodeRewriter.RewriteResult rewrite = rewriter.rewriteWithStatus(original);
+            if (!rewrite.succeeded()) {
+                throw new IllegalStateException("Failed to rewrite mixin closure class " + internal,
+                        rewrite.failure());
+            }
+            byte[] rewritten = rewrite.bytes();
             // Mixin classes themselves are consumed by the Mixin processor as
             // ClassNodes (members are copied into targets) and must keep their
             // members private per Mixin's validation rules. Everything else is
@@ -559,7 +555,7 @@ public final class NeoMixinExtractor {
             ClassReader reader = new ClassReader(classBytes);
             reader.accept(new ClassRemapper(new ClassNode(), collector), 0);
         } catch (Exception ignored) {
-            // Unparseable class — no references collected.
+            throw new IllegalStateException("Cannot scan mixin closure bytecode", ignored);
         }
         return refs;
     }
@@ -568,7 +564,7 @@ public final class NeoMixinExtractor {
         try (InputStream is = jar.getInputStream(entry)) {
             return is.readAllBytes();
         } catch (Exception e) {
-            return new byte[0];
+            throw new IllegalStateException("Cannot read JAR entry " + entry.getName(), e);
         }
     }
 }

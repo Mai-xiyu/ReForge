@@ -35,16 +35,7 @@ public final class EventBusHelper {
      * @return the same event instance (NeoForge convention)
      */
     public static Event postAndReturn(net.neoforged.bus.api.IEventBus bus, Event event) {
-        // 1. Dispatch to fallback listeners (handles Flywheel / Create custom events)
-        NeoForgeEventBusAdapter.dispatchFallback(event);
-
-        // 2. Also try posting to Forge's game bus directly (bypassing the proxy)
-        try {
-            net.minecraftforge.common.MinecraftForge.EVENT_BUS.post(event);
-        } catch (Throwable t) {
-            LOGGER.debug("[ReForged] Forge bus post() failed for {}: {}",
-                    event.getClass().getSimpleName(), t.getMessage());
-        }
+        bus.post(event);
 
         return event;
     }

@@ -7,14 +7,17 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.IOException;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.security.MessageDigest;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.jar.Attributes;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
@@ -84,64 +87,165 @@ public final class NeoForgeModPatcher {
     public static int patchAll(Path modsDir) {
         if (!Files.isDirectory(modsDir)) return 0;
 
-        Set<Path> recovered = cleanStaleArtifacts(modsDir);
-
-        int count = recovered.size();
+        int count = 0;
         try (var stream = Files.list(modsDir)) {
-            for (Path jar : stream.filter(p -> p.toString().endsWith(".jar")).toList()) {
-                if (recovered.contains(jar.toAbsolutePath().normalize())) continue;
+            for (Path jar : stream.filter(p -> p.toString().endsWith(".jar")).sorted().toList()) {
                 if (patchIfNeeded(jar)) count++;
+                else if (requiresPatching(jar)) {
+                    throw new IllegalStateException("Required NeoForge preprocessing failed for " + jar);
+                }
             }
         } catch (Exception e) {
-            warn("[ReForged] Error scanning mods directory: " + modsDir, e);
+            throw new IllegalStateException("Cannot complete NeoForge preprocessing in " + modsDir, e);
         }
         return count;
     }
 
     /**
-     * Recover from interrupted patch runs:
-     * <ul>
-     *   <li>delete leftover {@code *.jar.tmp} files,</li>
-     *   <li>re-create any {@code X.jar} whose {@code X.jar.neoforge-original}
-     *       backup exists but whose placeholder vanished (a previous run was
-     *       killed between writing the tmp file and the final move).</li>
-     * </ul>
+     * Forge's early service scanner may already hold the input JAR open on Windows.
+     * Startup therefore discovers patched copies, never replacing those open inputs.
      */
-    private static Set<Path> cleanStaleArtifacts(Path modsDir) {
-        Set<Path> recovered = new HashSet<>();
-        try (var stream = Files.list(modsDir)) {
-            for (Path path : stream.toList()) {
-                String name = path.getFileName().toString();
-                if (name.endsWith(".jar.tmp")) {
-                    try {
-                        Files.deleteIfExists(path);
-                        log("[ReForged] Removed stale temp file: " + name);
-                    } catch (Exception e) {
-                        warn("[ReForged] Could not remove stale temp file " + name, e);
-                    }
-                } else if (name.endsWith(".jar.neoforge-original")) {
-                    Path baseJar = path.resolveSibling(
-                            name.substring(0, name.length() - ".neoforge-original".length()));
-                    if (!Files.exists(baseJar)) {
-                        log("[ReForged] Restoring missing mod jar from backup: " + baseJar.getFileName());
-                        // patchIfNeeded() reads from the backup when present and
-                        // recreates the placeholder at the base path.
-                        if (patchIfNeeded(baseJar)) {
-                            recovered.add(baseJar.toAbsolutePath().normalize());
+    public static synchronized List<Path> prepareForDiscovery(Path modsDir) {
+        if (!Files.isDirectory(modsDir)) return List.of();
+        List<Path> prepared = new ArrayList<>();
+        String rulesIdentity = null;
+        try (var files = Files.list(modsDir)) {
+            for (Path input : files.filter(p -> p.toString().endsWith(".jar")).sorted().toList()) {
+                try (JarFile jar = new JarFile(input.toFile())) {
+                    JarEntry neo = jar.getJarEntry("META-INF/neoforge.mods.toml");
+                    if (neo == null) continue;
+                    JarEntry forge = jar.getJarEntry("META-INF/mods.toml");
+                    if (forge != null) {
+                        if (isReForgedDiscoveryDescriptor(jar, forge)
+                                && !Files.isRegularFile(input.resolveSibling(input.getFileName() + ".neoforge-original"))) {
+                            throw new IllegalStateException("Placeholder original is missing: " + input);
                         }
+                        // Existing Forge descriptors are handled by Forge's folder locator.
+                        continue;
+                    }
+                    try (InputStream metadata = jar.getInputStream(neo)) {
+                        if (ModDescriptorConverter.declaresReForgedIncompatibility(
+                                new String(metadata.readAllBytes(), StandardCharsets.UTF_8))) continue;
                     }
                 }
+                String digest = sha256(input);
+                if (rulesIdentity == null) rulesIdentity = discoveryRulesIdentity();
+                String cacheIdentity = java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                        .digest((digest + ":" + rulesIdentity).getBytes(StandardCharsets.UTF_8)));
+                Path cache = modsDir.toAbsolutePath().normalize().getParent()
+                        .resolve(".reforged/discovery/v3-" + cacheIdentity);
+                Files.createDirectories(cache);
+                Path generated = cache.resolve(input.getFileName());
+                try (FileChannel channel = FileChannel.open(cache.resolve("prepare.lock"),
+                        StandardOpenOption.CREATE, StandardOpenOption.WRITE); FileLock ignored = channel.lock()) {
+                    Path receipt = generated.resolveSibling(generated.getFileName() + ".complete");
+                    if (!validDiscoveryCache(generated, receipt, digest, rulesIdentity)) {
+                        Files.deleteIfExists(receipt);
+                        Files.copy(input, generated, StandardCopyOption.REPLACE_EXISTING);
+                        if (!digest.equals(sha256(generated)) || !patchIfNeeded(generated)) {
+                            throw new IllegalStateException("Cannot prepare required discovery artifact for " + input);
+                        }
+                        Path backup = generated.resolveSibling(generated.getFileName() + ".neoforge-original");
+                        if (!digest.equals(sha256(backup))) throw new IOException("Discovery backup digest mismatch: " + backup);
+                        Path temporaryReceipt = receipt.resolveSibling(receipt.getFileName() + ".tmp");
+                        Files.writeString(temporaryReceipt, discoveryReceipt(digest, rulesIdentity, sha256(generated)),
+                                StandardCharsets.UTF_8);
+                        moveAtomically(temporaryReceipt, receipt);
+                    }
+                    if (!digest.equals(sha256(input))) throw new IOException("NeoForge input changed during discovery: " + input);
+                }
+                prepared.add(generated);
             }
         } catch (Exception e) {
-            warn("[ReForged] Stale artifact cleanup failed in " + modsDir, e);
+            throw new IllegalStateException("Cannot prepare NeoForge discovery artifacts from " + modsDir, e);
         }
-        return recovered;
+        return List.copyOf(prepared);
     }
 
-    public static boolean patchIfNeeded(Path jarPath) {
+    private static boolean validDiscoveryCache(Path generated, Path receipt, String inputDigest, String rulesIdentity) {
+        try {
+            Path backup = generated.resolveSibling(generated.getFileName() + ".neoforge-original");
+            return Files.isRegularFile(receipt) && isReForgedDiscoveryJar(generated)
+                    && inputDigest.equals(sha256(backup))
+                    && Files.readString(receipt, StandardCharsets.UTF_8)
+                            .equals(discoveryReceipt(inputDigest, rulesIdentity, sha256(generated)));
+        } catch (IOException invalidCache) {
+            return false;
+        }
+    }
+
+    private static String discoveryReceipt(String inputDigest, String rulesIdentity, String outputDigest) {
+        return "format=1\ninput=" + inputDigest + "\nrules=" + rulesIdentity + "\noutput=" + outputDigest + "\n";
+    }
+
+    private static String discoveryRulesIdentity() throws Exception {
+        Path source = Path.of(NeoForgeModPatcher.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+        if (Files.isRegularFile(source)) return sha256(source);
+        if (!Files.isDirectory(source)) throw new IOException("Cannot identify discovery converter artifact: " + source);
+        // Gradle's manual patch command runs compiled classes/resources in a directory.
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        try (var files = Files.walk(source)) {
+            for (Path file : files.filter(Files::isRegularFile).sorted().toList()) {
+                digest.update(source.relativize(file).toString().replace('\\', '/').getBytes(StandardCharsets.UTF_8));
+                digest.update(Files.readAllBytes(file));
+            }
+        }
+        return java.util.HexFormat.of().formatHex(digest.digest());
+    }
+
+    public static synchronized boolean patchIfNeeded(Path jarPath) {
+        Path lockPath = jarPath.resolveSibling(jarPath.getFileName() + ".reforged.lock");
+        try (FileChannel channel = FileChannel.open(lockPath,
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+             FileLock ignored = channel.lock()) {
+            return patchIfNeededLocked(jarPath);
+        } catch (Exception e) {
+            warn("[ReForged] Could not acquire patch lock for " + jarPath.getFileName(), e);
+            return false;
+        }
+    }
+
+    // false means either not applicable or failed; startup must distinguish them.
+    private static boolean requiresPatching(Path path) throws IOException {
+        try (JarFile jar = new JarFile(path.toFile())) {
+            JarEntry neo = jar.getJarEntry("META-INF/neoforge.mods.toml");
+            if (neo == null) return false;
+            JarEntry forge = jar.getJarEntry("META-INF/mods.toml");
+            if (forge != null) return isReForgedDiscoveryDescriptor(jar, forge);
+            try (InputStream input = jar.getInputStream(neo)) {
+                return !ModDescriptorConverter.declaresReForgedIncompatibility(
+                        new String(input.readAllBytes(), StandardCharsets.UTF_8));
+            }
+        }
+    }
+
+    private static boolean patchIfNeededLocked(Path jarPath) {
+        // Cleanup is inside the per-JAR lock: another launcher may be writing it.
+        try {
+            Files.deleteIfExists(jarPath.resolveSibling(jarPath.getFileName() + ".tmp"));
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot clean interrupted patch for " + jarPath, e);
+        }
         Path backup = jarPath.resolveSibling(jarPath.getFileName() + ".neoforge-original");
-        Path sourcePath = Files.exists(backup) ? backup : jarPath;
+        boolean currentIsPlaceholder = isReForgedDiscoveryJar(jarPath);
+        if (currentIsPlaceholder && !Files.exists(backup)) {
+            warn("[ReForged] Refusing to rebuild a placeholder without its original backup: "
+                    + jarPath.getFileName(), null);
+            return false;
+        }
+
+        // A current JAR without a ReForged marker is a new source, even when an
+        // old backup with the same file name exists. This prevents A -> B updates
+        // from silently rebuilding B's placeholder from A.
+        Path sourcePath = currentIsPlaceholder ? backup : jarPath;
+        boolean sourceIsBackup = currentIsPlaceholder;
         if (!Files.exists(sourcePath)) return false;
+        final String sourceDigest;
+        try {
+            sourceDigest = sha256(sourcePath);
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot fingerprint NeoForge input " + sourcePath, e);
+        }
 
         String neoContent;
         byte[][] entryData;
@@ -162,6 +266,15 @@ public final class NeoForgeModPatcher {
                 neoContent = new String(is.readAllBytes(), StandardCharsets.UTF_8);
             }
 
+            if (ModDescriptorConverter.declaresReForgedIncompatibility(neoContent)) {
+                log("[ReForged] Skipping mod that declares ReForged incompatible: "
+                        + jarPath.getFileName());
+                if (sourceIsBackup) {
+                    restoreOriginal(jarPath, backup);
+                }
+                return false;
+            }
+
             // Extract the mod's own mixin payload (configs + class closure) so it
             // can be applied by Forge's Mixin environment via the placeholder jar.
             NeoMixinExtractor.Result payload;
@@ -170,9 +283,8 @@ public final class NeoForgeModPatcher {
                         msg -> log("[ReForged] [" + jarPath.getFileName() + "] " + msg));
             } catch (Throwable t) {
                 warn("[ReForged] Mixin extraction failed for " + jarPath.getFileName()
-                        + " — continuing without mixin payload", t);
-                payload = new NeoMixinExtractor.Result(java.util.Map.of(), java.util.Map.of(),
-                        java.util.Map.of(), List.of());
+                        + " — refusing to create a placeholder without its required payload", t);
+                return false;
             }
             mixinPayload = payload;
 
@@ -279,15 +391,75 @@ public final class NeoForgeModPatcher {
         }
 
         try {
-            if (!Files.exists(backup)) {
-                Files.copy(jarPath, backup);
+            if (!sourceDigest.equals(sha256(sourcePath))) {
+                throw new IOException("NeoForge input changed during patching: " + sourcePath);
             }
-            Files.move(tempJar, jarPath, StandardCopyOption.REPLACE_EXISTING);
-            log("[ReForged] Patched: " + jarPath.getFileName() + " (original backed up as .neoforge-original)");
+            if (!sourceIsBackup) {
+                archivePreviousBackup(backup);
+                Files.copy(jarPath, backup, StandardCopyOption.REPLACE_EXISTING);
+            }
+            moveAtomically(tempJar, jarPath);
+            log("[ReForged] Patched: " + jarPath.getFileName()
+                    + " (sourceSha256=" + sourceDigest + ")");
             return true;
         } catch (Exception e) {
             warn("[ReForged] Failed to replace JAR: " + jarPath.getFileName(), e);
             return false;
+        }
+    }
+
+    private static boolean isReForgedDiscoveryJar(Path jarPath) {
+        if (!Files.isRegularFile(jarPath)) return false;
+        try (JarFile jar = new JarFile(jarPath.toFile())) {
+            JarEntry forgeEntry = jar.getJarEntry("META-INF/mods.toml");
+            return forgeEntry != null && isReForgedDiscoveryDescriptor(jar, forgeEntry);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static void archivePreviousBackup(Path backup) throws IOException {
+        if (!Files.exists(backup)) return;
+        String oldHash = sha256(backup);
+        Path archived = backup.resolveSibling(backup.getFileName() + "." + oldHash);
+        if (!Files.exists(archived)) {
+            moveAtomically(backup, archived);
+        } else {
+            Files.deleteIfExists(backup);
+        }
+    }
+
+    private static void restoreOriginal(Path jarPath, Path backup) throws IOException {
+        Path temp = jarPath.resolveSibling(jarPath.getFileName() + ".optout.tmp");
+        Files.copy(backup, temp, StandardCopyOption.REPLACE_EXISTING);
+        moveAtomically(temp, jarPath);
+        log("[ReForged] Restored opted-out NeoForge JAR: " + jarPath.getFileName());
+    }
+
+    private static void moveAtomically(Path source, Path target) throws IOException {
+        try {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE);
+        } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private static String sha256(Path path) throws IOException {
+        try (InputStream input = Files.newInputStream(path)) {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = input.read(buffer)) >= 0) {
+                if (read > 0) digest.update(buffer, 0, read);
+            }
+            StringBuilder result = new StringBuilder(64);
+            for (byte value : digest.digest()) {
+                result.append(String.format(java.util.Locale.ROOT, "%02x", value));
+            }
+            return result.toString();
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IOException("SHA-256 is unavailable", e);
         }
     }
 

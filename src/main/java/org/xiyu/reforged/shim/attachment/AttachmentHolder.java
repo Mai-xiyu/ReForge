@@ -79,7 +79,9 @@ public class AttachmentHolder implements IAttachmentHolder {
     public <T> T setData(AttachmentType<T> type, T value) {
         Objects.requireNonNull(type);
         Objects.requireNonNull(value);
-        return (T) getAttachmentMap().put(type, value);
+        T previous = (T) getAttachmentMap().put(type, value);
+        syncData(type);
+        return previous;
     }
 
     @Override
@@ -89,15 +91,22 @@ public class AttachmentHolder implements IAttachmentHolder {
         if (attachments == null) {
             return null;
         }
-        return (T) attachments.remove(type);
+        T previous = (T) attachments.remove(type);
+        syncData(type);
+        return previous;
     }
 
     @Override
+    @SuppressWarnings("unchecked")
     public <T> Optional<T> getExistingData(AttachmentType<T> type) {
-        if (!hasData(type)) {
-            return Optional.empty();
-        }
-        return Optional.ofNullable(getData(type));
+        return Optional.ofNullable(getExistingDataOrNull(type));
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public <T> T getExistingDataOrNull(AttachmentType<T> type) {
+        Objects.requireNonNull(type);
+        return attachments == null ? null : (T) attachments.get(type);
     }
 
     /**
@@ -169,6 +178,11 @@ public class AttachmentHolder implements IAttachmentHolder {
         @Override
         IAttachmentHolder getExposedHolder() {
             return exposedHolder;
+        }
+
+        @Override
+        public void syncData(AttachmentType<?> type) {
+            exposedHolder.syncData(type);
         }
 
         public void deserializeInternal(HolderLookup.Provider provider, CompoundTag tag) {

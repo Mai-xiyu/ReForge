@@ -18,7 +18,7 @@ public interface IAttachmentHolder {
 
     @Nullable
     default <T> T getExistingDataOrNull(AttachmentType<T> type) {
-        return getExistingData(type).orElse(null);
+        return hasData(type) ? getData(type) : null;
     }
 
     <T> @Nullable T setData(AttachmentType<T> type, T value);

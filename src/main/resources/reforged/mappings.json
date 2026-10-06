@@ -225,9 +225,9 @@
       "to": "net.neoforged.neoforge.network."
     },
     {
-      "comment": "Data attachments — mapped to shim (NeoForge-only API)",
+      "comment": "Data attachments — one facade and per-holder storage",
       "from": "net.neoforged.neoforge.attachment.",
-      "to": "org.xiyu.reforged.shim.attachment."
+      "to": "net.neoforged.neoforge.attachment."
     },
     {
       "comment": "New-style capabilities — kept in proxy layer (net.neoforged.neoforge.capabilities) with Forge bridge",
@@ -466,7 +466,6 @@
       "from": "net.neoforged.api.distmarker.OnlyIn",
       "to": "net.minecraftforge.api.distmarker.OnlyIn"
     },
-
     {
       "comment": "NeoForge-only client events — identity mappings to prevent package remapping. Inner classes ($Pre/$Post) are auto-handled by MappingRegistry.",
       "from": "net.neoforged.neoforge.client.event.ClientTickEvent",
@@ -548,6 +547,11 @@
       "comment": "Create accessor interface remap — align Neo mod classes with loader-stable shim type",
       "from": "com.simibubi.create.foundation.mixin.accessor.BlockBehaviourAccessor",
       "to": "org.xiyu.reforged.shim.create.BlockBehaviourAccessor"
+    },
+    {
+      "comment": "Holder-aware NBT serialization facade",
+      "from": "net.neoforged.neoforge.common.util.INBTSerializable",
+      "to": "net.neoforged.neoforge.common.util.INBTSerializable"
     }
   ]
 }

@@ -44,7 +44,12 @@ public class BlockEntityAttachmentMixin implements IAttachmentHolder, NeoAttachm
 
     @Override
     public <T> Optional<T> getExistingData(AttachmentType<T> type) {
-        return IAttachmentHolder.super.getExistingData(type);
+        return reforged$neoAttachmentHolder.getExistingData(type);
+    }
+
+    @Override
+    public <T> T getExistingDataOrNull(AttachmentType<T> type) {
+        return reforged$neoAttachmentHolder.getExistingDataOrNull(type);
     }
 
     public <T> Optional<T> getExistingData(Supplier<AttachmentType<T>> type) {
@@ -52,8 +57,27 @@ public class BlockEntityAttachmentMixin implements IAttachmentHolder, NeoAttachm
     }
 
     @Override
+    public <T> T getExistingDataOrNull(Supplier<AttachmentType<T>> type) {
+        return getExistingDataOrNull(type.get());
+    }
+
+    @Override
     public void syncData(AttachmentType<?> type) {
         ((BlockEntity) (Object) this).setChanged();
+    }
+
+    @org.spongepowered.asm.mixin.injection.Inject(method = {"saveCustomOnly", "saveWithoutMetadata"}, at = @org.spongepowered.asm.mixin.injection.At("RETURN"), remap = false)
+    private void reforged$saveAttachments(net.minecraft.core.HolderLookup.Provider provider,
+            org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<net.minecraft.nbt.CompoundTag> ci) {
+        var data = reforged$neoAttachmentHolder.serializeAttachments(provider);
+        if (data != null) ci.getReturnValue().put(AttachmentHolder.ATTACHMENTS_NBT_KEY, data);
+    }
+
+    @org.spongepowered.asm.mixin.injection.Inject(method = {"loadWithComponents", "loadCustomOnly"},
+            at = @org.spongepowered.asm.mixin.injection.At("RETURN"), remap = false)
+    private void reforged$loadAttachments(net.minecraft.nbt.CompoundTag tag, net.minecraft.core.HolderLookup.Provider provider,
+            org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
+        reforged$neoAttachmentHolder.deserializeAttachments(provider, tag.getCompound(AttachmentHolder.ATTACHMENTS_NBT_KEY));
     }
 
     @Override

@@ -23,7 +23,7 @@ import java.nio.file.*;
 import java.util.*;
 
 /**
- * ReForged — NeoForge Compatibility Bridge for Forge 1.21.1
+ * ReForge — NeoForge compatibility layer for Forge 1.21.
  *
  * <p>Drop this mod + NeoForge mods into .minecraft/mods/. ReForged will:
  * <ol>
@@ -80,7 +80,7 @@ public class Reforged {
             net.minecraftforge.registries.GameData.init();
             LOGGER.info("[ReForged] Forge GameData initialized before NeoForge mod construction");
         } catch (Throwable t) {
-            LOGGER.warn("[ReForged] Forge GameData pre-initialization failed: {}", t.getMessage());
+            throw new IllegalStateException("Required Forge GameData initialization failed", t);
         }
     }
 
@@ -118,7 +118,7 @@ public class Reforged {
                 LOGGER.info("[ReForged] Collected {} NeoForge GUI layer(s) (deferred apply on first render)", layerCount);
             }
         } catch (Throwable t) {
-            LOGGER.warn("[ReForged] RegisterGuiLayersEvent dispatch failed: {}", t.getMessage());
+            throw new IllegalStateException("Required GUI layer registration failed", t);
         }
 
         // 2. RegisterClientExtensionsEvent (Create/TF need this for custom rendering)
@@ -136,12 +136,12 @@ public class Reforged {
                 try {
                     registerMenuScreenUnchecked(type, ctor);
                 } catch (Throwable t) {
-                    LOGGER.warn("[ReForged] Failed to register menu screen for {}: {}", type, t.getMessage());
+                    throw new IllegalStateException("Required menu screen registration failed for " + type, t);
                 }
             });
             LOGGER.info("[ReForged] Registered {} NeoForge menu screen(s)", screens.size());
         } catch (Throwable t) {
-            LOGGER.warn("[ReForged] RegisterMenuScreensEvent dispatch failed: {}", t.getMessage());
+            throw new IllegalStateException("Required menu screen registration failed", t);
         }
 
         // 4. RegisterNamedRenderTypesEvent (Create uses custom render types)
@@ -167,13 +167,13 @@ public class Reforged {
                         var forgeMap = (java.util.Map<net.minecraft.resources.ResourceLocation, Object>) mapField.get(null);
                         if (forgeMap != null) {
                             renderTypes.forEach((key, group) -> forgeMap.put(key, group.toForge()));
-                        }
-                    }
-                } catch (Throwable ignored) {}
+                        } else throw new IllegalStateException("Forge named render type map is unavailable");
+                    } else throw new IllegalStateException("Forge named render type map field is unavailable");
+                } catch (Throwable t) { throw new IllegalStateException("Cannot apply named render types", t); }
                 LOGGER.info("[ReForged] Registered {} NeoForge named render type(s)", renderTypes.size());
             }
         } catch (Throwable t) {
-            LOGGER.warn("[ReForged] RegisterNamedRenderTypesEvent dispatch failed: {}", t.getMessage());
+            throw new IllegalStateException("Required named render type registration failed", t);
         }
 
         // 5. RegisterRenderBuffersEvent (Create uses custom render buffers)
@@ -195,11 +195,11 @@ public class Reforged {
                     fixedMap.putAll(buffers);
                     LOGGER.info("[ReForged] Injected {} NeoForge render buffer(s) into BufferSource", buffers.size());
                 } catch (Throwable reflectErr) {
-                    LOGGER.warn("[ReForged] Failed to inject render buffers into BufferSource: {}", reflectErr.getMessage());
+                    throw new IllegalStateException("Cannot apply required render buffers", reflectErr);
                 }
             }
         } catch (Throwable t) {
-            LOGGER.warn("[ReForged] RegisterRenderBuffersEvent dispatch failed: {}", t.getMessage());
+            throw new IllegalStateException("Required render buffer registration failed", t);
         }
 
         // 6. RegisterItemDecorationsEvent (Create uses item decorators)
@@ -218,7 +218,7 @@ public class Reforged {
                 LOGGER.info("[ReForged] Registered {} NeoForge item decoration(s)", decorators.size());
             }
         } catch (Throwable t) {
-            LOGGER.warn("[ReForged] RegisterItemDecorationsEvent dispatch failed: {}", t.getMessage());
+            throw new IllegalStateException("Required item decoration registration failed", t);
         }
 
         // 7. RegisterDimensionTransitionScreenEvent (TF uses custom transition screens)
@@ -235,7 +235,7 @@ public class Reforged {
                 LOGGER.info("[ReForged] Registered {} NeoForge dimension transition screen(s)", total);
             }
         } catch (Throwable t) {
-            LOGGER.warn("[ReForged] RegisterDimensionTransitionScreenEvent dispatch failed: {}", t.getMessage());
+            throw new IllegalStateException("Required dimension transition screen registration failed", t);
         }
 
         LOGGER.info("[ReForged] Client setup phase complete");

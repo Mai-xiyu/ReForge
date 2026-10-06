@@ -16,7 +16,7 @@ import java.util.function.Supplier;
  *
  * <p>NeoForge mods (e.g. Champions) call {@code entity.getData(Supplier)}
  * to access per-entity data attachments. Forge's Entity doesn't have these
- * methods. This mixin adds stub implementations that return default values.</p>
+ * methods. This mixin delegates to the persistent NeoForge attachment holder.</p>
  */
 @Mixin(Entity.class)
 public class EntityAttachmentMixin implements IAttachmentHolder, NeoAttachmentHolderBridge {
@@ -67,11 +67,36 @@ public class EntityAttachmentMixin implements IAttachmentHolder, NeoAttachmentHo
     }
 
     public <T> Optional<T> getExistingData(AttachmentType<T> type) {
-        return IAttachmentHolder.super.getExistingData(type);
+        return reforged$neoAttachmentHolder.getExistingData(type);
+    }
+
+    @Override
+    public <T> T getExistingDataOrNull(AttachmentType<T> type) {
+        return reforged$neoAttachmentHolder.getExistingDataOrNull(type);
     }
 
     public <T> Optional<T> getExistingData(Supplier<AttachmentType<T>> type) {
         return getExistingData(type.get());
+    }
+
+    @Override
+    public <T> T getExistingDataOrNull(Supplier<AttachmentType<T>> type) {
+        return getExistingDataOrNull(type.get());
+    }
+
+    @org.spongepowered.asm.mixin.injection.Inject(method = "saveWithoutId", at = @org.spongepowered.asm.mixin.injection.At("RETURN"), remap = false)
+    private void reforged$saveAttachments(net.minecraft.nbt.CompoundTag tag,
+            org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<net.minecraft.nbt.CompoundTag> ci) {
+        var data = reforged$neoAttachmentHolder.serializeAttachments(((Entity) (Object) this).registryAccess());
+        if (data != null) tag.put(AttachmentHolder.ATTACHMENTS_NBT_KEY, data);
+        else tag.remove(AttachmentHolder.ATTACHMENTS_NBT_KEY);
+    }
+
+    @org.spongepowered.asm.mixin.injection.Inject(method = "load", at = @org.spongepowered.asm.mixin.injection.At("RETURN"), remap = false)
+    private void reforged$loadAttachments(net.minecraft.nbt.CompoundTag tag,
+            org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
+        reforged$neoAttachmentHolder.deserializeAttachments(((Entity) (Object) this).registryAccess(),
+                tag.getCompound(AttachmentHolder.ATTACHMENTS_NBT_KEY));
     }
 
     @Override

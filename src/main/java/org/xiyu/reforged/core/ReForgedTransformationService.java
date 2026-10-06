@@ -41,7 +41,7 @@ public final class ReForgedTransformationService implements ITransformationServi
             logInfo("[ReForged] Loaded " + registry.getDirectCount()
                     + " direct + " + registry.getShimCount() + " shim mappings");
         } catch (Throwable t) {
-            logWarn("[ReForged] Mapping registry initialization failed during early service", t);
+            throw new IllegalStateException("Required ReForged mappings could not initialize", t);
         }
     }
 
@@ -94,12 +94,40 @@ public final class ReForgedTransformationService implements ITransformationServi
         try {
             Path gameDir = Path.of(System.getProperty("user.dir", ".")).toAbsolutePath().normalize();
             Path modsDir = gameDir.resolve("mods");
-            int patched = NeoForgeModPatcher.patchAll(modsDir);
+            int patched = NeoForgeModPatcher.prepareForDiscovery(modsDir).size();
+            excludeRawNeoForgeInputs(modsDir);
             if (patched > 0) {
                 logInfo("[ReForged] Patched " + patched + " NeoForge jar(s) in " + modsDir);
             }
         } catch (Throwable t) {
-            logWarn("[ReForged] Early NeoForge jar patching failed", t);
+            throw new IllegalStateException("Required early NeoForge preprocessing failed", t);
+        }
+    }
+
+    /**
+     * Forge 51.0.33's folder locator reads this exclusion list on every scan.
+     * It must not also parse raw NeoForge-only descriptors after our locator
+     * supplies their prepared counterparts. The automatic fmlloader module
+     * permits this version-bound reflective adapter; a changed layout fails
+     * startup explicitly instead of accepting duplicate/invalid mod files.
+     */
+    @SuppressWarnings("unchecked")
+    private static void excludeRawNeoForgeInputs(Path modsDir) throws Exception {
+        if (!java.nio.file.Files.isDirectory(modsDir)) return;
+        var field = net.minecraftforge.fml.loading.ModDirTransformerDiscoverer.class.getDeclaredField("found");
+        field.setAccessible(true);
+        var excluded = (List<cpw.mods.modlauncher.api.NamedPath>) field.get(null);
+        try (var files = java.nio.file.Files.list(modsDir)) {
+            for (Path path : files.filter(p -> p.toString().endsWith(".jar")).sorted().toList()) {
+                try (JarFile jar = new JarFile(path.toFile())) {
+                    if (jar.getJarEntry("META-INF/neoforge.mods.toml") == null
+                            || jar.getJarEntry("META-INF/mods.toml") != null) continue;
+                }
+                Path normalized = path.toAbsolutePath().normalize();
+                if (excluded.stream().noneMatch(p -> java.util.Arrays.asList(p.paths()).contains(normalized))) {
+                    excluded.add(new cpw.mods.modlauncher.api.NamedPath("reforged-prepared-input", normalized));
+                }
+            }
         }
     }
 

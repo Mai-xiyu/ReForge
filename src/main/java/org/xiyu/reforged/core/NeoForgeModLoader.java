@@ -82,12 +82,7 @@ public final class NeoForgeModLoader {
                     event.getClass().getSimpleName());
             return;
         }
-        try {
-            storedModEventBus.post(event);
-        } catch (Throwable t) {
-            LOGGER.error("[ReForged] Failed to dispatch NeoForge mod event {}: {}",
-                    event.getClass().getSimpleName(), t.getMessage(), t);
-        }
+        storedModEventBus.post(event);
     }
 
     /**
@@ -144,14 +139,16 @@ public final class NeoForgeModLoader {
         } catch (Throwable t) {
             LOGGER.warn("[ReForged] Mod analysis failed (non-fatal): {}", t.getMessage());
         }
-
         // Phase 2: Create classloader with all NeoForge JARs
+        // Do not validate missing dependencies until JiJ metadata is available:
+        // a required mod may be supplied by an embedded JAR. No entrypoint is
+        // initialized while preparing the loader and extracting its inputs.
         List<Path> extractedJiJJars = new ArrayList<>();
         ClassLoader parentLoader = resolveGameClassLoader();
         LOGGER.info("[ReForged] NeoMod parent classloader: {}", parentLoader);
         URLClassLoader neoClassLoader = NeoModClassLoader.createClassLoader(
                 neoJars, parentLoader, extractedJiJJars);
-        if (neoClassLoader == null) return;
+        if (neoClassLoader == null) throw new IllegalStateException("ReForged could not create the required mod classloader");
         neoModClassLoader = neoClassLoader;
 
         // Phase 2.1: Add extracted JiJ JARs (e.g. Flywheel inside Create) to the scan list
@@ -162,6 +159,8 @@ public final class NeoForgeModLoader {
                     extractedJiJJars.stream().map(p -> p.getFileName().toString()).toList());
             neoJars.addAll(extractedJiJJars);
         }
+        neoJars = new ArrayList<>(NeoForgeCompatibilityPreflight.validateAndOrder(
+                neoJars, NeoForgeCompatibilityPreflight.detectEnvironment()));
 
         // Phase 2.5: Open game module packages to the URLClassLoader's unnamed module
         // so NeoForge mod classes can access Minecraft/Forge classes across the module boundary.
@@ -213,7 +212,9 @@ public final class NeoForgeModLoader {
             } catch (Throwable e) {
                 String jarName = jar.getFileName().toString();
                 failedMods.add(jarName);
-                LOGGER.error("[ReForged] Failed to load NeoForge mod from {}", jarName, e);
+                LOGGER.error("[ReForged] Required NeoForge mod failed during initialization; aborting startup: {}",
+                        jarName, e);
+                break;
             }
         }
 
@@ -228,8 +229,8 @@ public final class NeoForgeModLoader {
         }
 
         if (!failedMods.isEmpty()) {
-            LOGGER.warn("[ReForged] {} NeoForge mod JAR(s) had loading failures: {} — continuing without them",
-                    failedMods.size(), failedMods);
+            throw new IllegalStateException("ReForged could not initialize required NeoForge mod JAR(s): "
+                    + failedMods);
         }
         LOGGER.info("[ReForged] Loaded {} NeoForge mod instance(s)", loadedModInstances.size());
 
@@ -253,15 +254,15 @@ public final class NeoForgeModLoader {
                     net.minecraftforge.fml.config.ModConfig.Type.CLIENT, configDir);
             LOGGER.info("[ReForged] Re-loaded COMMON and CLIENT configs for NeoForge mod config initialization");
         } catch (Throwable t) {
-            LOGGER.warn("[ReForged] Config loading after NeoForge mod init failed: {}", t.getMessage());
+            throw new IllegalStateException("ReForged could not initialize required mod configs", t);
         }
     }
 
     private static void addDeduplicated(List<Path> target, List<Path> candidates, String source) {
-        Set<String> existing = new HashSet<>();
-        for (Path p : target) existing.add(p.getFileName().toString());
+        Set<Path> existing = new HashSet<>();
+        for (Path p : target) existing.add(p.toAbsolutePath().normalize());
         for (Path candidate : candidates) {
-            if (existing.add(candidate.getFileName().toString())) {
+            if (existing.add(candidate.toAbsolutePath().normalize())) {
                 target.add(candidate);
                 LOGGER.info("[ReForged] Found NeoForge mod in {}: {}", source, candidate.getFileName());
             }
@@ -370,13 +371,16 @@ public final class NeoForgeModLoader {
             } catch (Throwable e) {
                 // Catch Throwable (not just Exception) to handle ExceptionInInitializerError,
                 // NoClassDefFoundError, VerifyError, etc. from NeoForge mod static initializers.
-                // We log the failure but continue loading remaining mod classes from this JAR.
+                // A partially initialized container is unsafe to expose, so propagate the
+                // failure and abort this launch instead of continuing with mixed state.
                 String cause = e.getMessage();
                 if (e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null) {
                     cause = e.getCause().getClass().getSimpleName() + ": " + e.getCause().getMessage();
                 }
-                LOGGER.error("[ReForged] Failed to load mod class '{}': {} — skipping this mod, continuing",
+                LOGGER.error("[ReForged] Failed to load mod class '{}': {} — aborting startup",
                         info.className(), cause, e);
+                throw new IllegalStateException("Failed to initialize NeoForge mod " + info.modId()
+                        + " during mod construction", e);
             }
         }
     }

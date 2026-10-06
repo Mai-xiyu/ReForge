@@ -32,7 +32,7 @@ public final class NeoJarDiscovery {
     public static List<Path> discoverNeoForgeJars(Path modsDir) {
         List<Path> result = new ArrayList<>();
         try (var stream = Files.list(modsDir)) {
-            for (Path path : stream.filter(p -> p.toString().endsWith(".jar")).toList()) {
+            for (Path path : stream.filter(p -> p.toString().endsWith(".jar")).sorted().toList()) {
                 try (JarFile jar = new JarFile(path.toFile())) {
                     if (shouldBridgeNeoForgeJar(jar, path)) {
                         result.add(bridgeSourceFor(jar, path));
@@ -152,6 +152,16 @@ public final class NeoJarDiscovery {
     private static boolean shouldBridgeNeoForgeJar(JarFile jar, Path path) {
         boolean hasNeo = jar.getJarEntry("META-INF/neoforge.mods.toml") != null;
         if (!hasNeo) return false;
+
+        try (var input = jar.getInputStream(jar.getJarEntry("META-INF/neoforge.mods.toml"))) {
+            if (ModDescriptorConverter.declaresReForgedIncompatibility(
+                    new String(input.readAllBytes(), StandardCharsets.UTF_8))) {
+                LOGGER.info("[ReForged] Skipping author-excluded NeoForge JAR {}", path.getFileName());
+                return false;
+            }
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("Cannot read NeoForge metadata: " + path, e);
+        }
 
         JarEntry forgeToml = jar.getJarEntry("META-INF/mods.toml");
         if (forgeToml == null) return true;

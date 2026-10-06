@@ -169,8 +169,9 @@ public final class NeoForgeModAnalyzer {
             List<String> warnings,
             double compatibilityScore
     ) {
-        /** Whether this mod is likely to work under ReForged. */
+        /** Coverage of recognized package references; not a runtime compatibility rating. */
         public String compatibilityRating() {
+            if (Double.isNaN(compatibilityScore)) return "UNKNOWN";
             if (compatibilityScore >= 0.90) return "HIGH";
             if (compatibilityScore >= 0.60) return "MEDIUM";
             if (compatibilityScore >= 0.30) return "LOW";
@@ -191,7 +192,7 @@ public final class NeoForgeModAnalyzer {
         if (jars.isEmpty()) return;
 
         LOGGER.info("[ReForged] ╔══════════════════════════════════════════════════╗");
-        LOGGER.info("[ReForged] ║    NeoForge Mod Compatibility Analysis Report    ║");
+        LOGGER.info("[ReForged] ║    NeoForge Package Reference Coverage Report    ║");
         LOGGER.info("[ReForged] ╚══════════════════════════════════════════════════╝");
 
         List<ModAnalysis> analyses = new ArrayList<>();
@@ -204,6 +205,8 @@ public final class NeoForgeModAnalyzer {
                 LOGGER.error("[ReForged] Failed to analyze {}: {}", jar.getFileName(), e.getMessage());
             }
         }
+
+        LOGGER.info("[ReForged] Package coverage does not validate member linkage or runtime behavior; {} input(s) could not be analyzed", jars.size() - analyses.size());
 
         // Summary
         if (analyses.size() > 1) {
@@ -298,7 +301,7 @@ public final class NeoForgeModAnalyzer {
 
         // Calculate compatibility score
         int totalRefs = scanner.neoForgeRefs.size();
-        double score = totalRefs == 0 ? 1.0 : (double) shimmed.size() / totalRefs;
+        double score = totalRefs == 0 ? Double.NaN : (double) shimmed.size() / totalRefs;
 
         return new ModAnalysis(
                 jarName,
@@ -322,9 +325,9 @@ public final class NeoForgeModAnalyzer {
     private static void logModAnalysis(ModAnalysis a) {
         LOGGER.info("[ReForged] ┌──────────────────────────────────────────────────");
         LOGGER.info("[ReForged] │ Mod: {} ({})", a.modId(), a.jarName());
-        LOGGER.info("[ReForged] │ Classes: {} | NeoForge API refs: {} | Compatibility: {} ({})",
+        LOGGER.info("[ReForged] │ Classes: {} | NeoForge API refs: {} | Package coverage: {} ({})",
                 a.totalClasses(), a.totalNeoRefs(),
-                a.compatibilityRating(), String.format("%.0f%%", a.compatibilityScore() * 100));
+                a.compatibilityRating(), Double.isNaN(a.compatibilityScore()) ? "unknown" : String.format("%.0f%%", a.compatibilityScore() * 100));
         LOGGER.info("[ReForged] ├──────────────────────────────────────────────────");
 
         // API category breakdown
@@ -387,9 +390,9 @@ public final class NeoForgeModAnalyzer {
 
         LOGGER.info("[ReForged] ═══════════════════════════════════════════════════");
         LOGGER.info("[ReForged]  Analysis Summary: {} mod(s) scanned", totalMods);
-        LOGGER.info("[ReForged]    HIGH compatibility:   {}", highCompat);
-        LOGGER.info("[ReForged]    MEDIUM compatibility: {}", medCompat);
-        LOGGER.info("[ReForged]    LOW compatibility:    {}", lowCompat);
+        LOGGER.info("[ReForged]    HIGH package coverage:   {}", highCompat);
+        LOGGER.info("[ReForged]    MEDIUM package coverage: {}", medCompat);
+        LOGGER.info("[ReForged]    LOW package coverage:    {}", lowCompat);
         LOGGER.info("[ReForged] ═══════════════════════════════════════════════════");
     }
 

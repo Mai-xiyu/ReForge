@@ -69,18 +69,17 @@ public final class EventBusSubscriberRegistrar {
                         // Register the class (static methods with @SubscribeEvent)
                         NeoForgeEventBusAdapter.handleRegister(targetBus, subscriberClass);
 
-                        LOGGER.info("[ReForged] ✓ Auto-registered @EventBusSubscriber: {} (bus={}, dist={})",
+                        LOGGER.info("[ReForged] Auto-registered @EventBusSubscriber: {} (bus={}, dist={})",
                                 subscriberClass.getSimpleName(), info.bus, info.dists);
                     } catch (Throwable t) {
                         // Catch Throwable (not just Exception) — NoClassDefFoundError can
                         // propagate from Class.getMethods/getDeclaredMethods when the class
                         // references NeoForge event types without shims.
-                        LOGGER.warn("[ReForged] Skipping subscriber class {} — {}",
-                                info.className, t.getMessage());
+                        throw new IllegalStateException("Cannot register required event subscriber " + info.className, t);
                     }
                 }
             } catch (Exception e) {
-                LOGGER.error("[ReForged] Failed to scan {} for @EventBusSubscriber", jarPath.getFileName(), e);
+                throw new IllegalStateException("Cannot initialize event subscribers in " + jarPath, e);
             }
         }
     }
@@ -107,11 +106,11 @@ public final class EventBusSubscriberRegistrar {
                         result.add(new SubscriberInfo(className, scanner.bus, scanner.dists));
                     }
                 } catch (Exception e) {
-                    // Skip unreadable class files
+                    throw new IllegalStateException("Cannot scan subscriber class " + entry.getName() + " in " + jarPath, e);
                 }
             }
         } catch (Exception e) {
-            LOGGER.error("[ReForged] Failed to scan JAR for subscribers: {}", jarPath.getFileName(), e);
+            throw new IllegalStateException("Cannot discover event subscribers in " + jarPath, e);
         }
         return result;
     }

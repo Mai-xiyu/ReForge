@@ -1,0 +1,1 @@
+{"jars":[{"identifier":{"group":"org.xiyu.reforged.test","artifact":"embedded"},"version":{"range":"[1,2)","artifactVersion":"1.0.0"},"path":"META-INF/jarjar/embedded.jar"}]}

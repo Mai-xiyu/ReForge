@@ -1,300 +1,55 @@
-# ReForged
+# ReForge
 
-<p align="center">
-  <img src="src/main/resources/logo.png" alt="ReForged Logo" width="256"/>
-</p>
+中文 | [English](README.md)
 
-🇨🇳 中文版 | [🇬🇧 English](./README.md)
+尝试在 Minecraft Forge 上运行 NeoForge 模组的实验性兼容层，包含加载、字节码转换、API 桥接、事件与资源适配。
 
-[![Minecraft](https://img.shields.io/badge/Minecraft-1.21-green.svg)](https://www.minecraft.net/)
-[![Forge](https://img.shields.io/badge/Forge-51.0.33-orange.svg)](https://files.minecraftforge.net/)
-[![Java](https://img.shields.io/badge/Java-21-blue.svg)](https://www.oracle.com/java/technologies/downloads/)
+**这是一个 vibecoding 作品。** 大量代码由 AI 辅助生成或修改，维护者负责验证与维护。编译通过不代表模组兼容，也不代表长期稳定。
 
-一个兼容性桥接项目，让 **NeoForge 模组**能够在 **Minecraft Forge 1.21** 上无缝运行，无需任何修改。
+## 玩家
 
-## 📖 概述
+当前基线：**Minecraft 1.21 / Forge 51.0.33 / Java 21**。不支持 Forge 1.20.1，尚未确认 Minecraft 1.21.1 支持。
 
-ReForged 是一个创新的运行时适配器，它在 NeoForge 和 Forge 模组加载器之间架起了桥梁。它使用先进的字节码转换技术，动态加载 NeoForge 模组并将其 API 调用转换为 Forge 等效调用。
+1. 使用独立游戏实例，备份存档。
+2. 从源码构建，将唯一安装包 `build/libs/reforge-1.0.0.jar` 放入 `mods/`。
+3. 加入目标 NeoForge 模组及其依赖，检查启动日志和实际玩法。
 
-**作者：** Mai_xiyu  
-**版本：** 1.0.0  
-**许可证：** LGPL-2.1-only
+安装包内嵌运行时与 MixinExtras。`build/intermediates/jars/` 中的其他 JAR 是构建中间产物或测试夹具，不需要安装。
 
-## ✨ 核心特性
+启动保留原始 NeoForge JAR，在 `.reforged/discovery/` 生成发现副本。手动 `patchNeoForgeMods` 会替换输入并保留 `.neoforge-original` 备份。模组作者声明与内部 Mod ID `reforged` 不兼容时，该模组会退出桥接加载。
 
-- 🔄 **零 JAR 修改** — NeoForge 模组无需重新打包或重新构建即可运行
-- 🚀 **动态加载** — 运行时自动发现和加载 NeoForge 模组
-- 🔧 **字节码转换** — 使用 ASM 技术将 NeoForge API 调用转换为 Forge
-- 🎯 **事件总线桥接** — 透明的事件系统兼容性
-- 📦 **资源整合** — NeoForge 模组资源（纹理、模型、配方）自动可用
-- ⚙️ **自动配置** — 无缝转换 `neoforge.mods.toml` 为 Forge 格式
-- 🎨 **全面补丁** — 91 个 Mixin 补丁处理边缘情况兼容性
-- 🛠️ **API 替身** — 为 DeferredRegister、CreativeTabs、Attachments 等提供替代实现
+已知限制：
 
-## 🏗️ 技术架构
+- 不支持附件自动网络同步。
+- 真实联机、Jade 玩法、复杂整合包及长期存档运行尚未完成验证。
+- 内嵌依赖内容冲突、必要加载或注册失败会阻断启动。
 
-ReForged 实现了一个复杂的多层兼容性系统：
+向 [Issues](https://github.com/Mai-xiyu/ReForge/issues) 提交可复现的桥接故障，附准确版本、复现步骤、日志与客户端/服务端范围，并删除隐私信息。在原生 NeoForge 也能复现时，再向原模组作者报告。
 
-### 加载流程
-```
-ReForged 初始化
-    ↓
-扫描 mods/ 文件夹中的 NeoForge JAR（包含 neoforge.mods.toml）
-    ↓
-对每个 NeoForge 模组：
-    • 将元数据转换为 Forge 格式
-    • 创建隔离的类加载器
-    • 使用 ASM 转换字节码
-    • 将 NeoForge API 引用重映射到替身类
-    • 使用桥接的事件总线实例化模组
-    ↓
-将模组资源注册为 Minecraft 资源包
+## 开发者
+
+使用 JDK 21 与 Gradle Wrapper：
+
+```sh
+git clone https://github.com/Mai-xiyu/ReForge.git
+cd ReForge
+./gradlew build verifyReleaseJar
 ```
 
-### 核心组件
+Windows 使用 `.\gradlew.bat`。安装包及 SHA-256 文件位于 `build/libs/`。
 
-| 组件 | 作用 |
-|------|------|
-| **NeoForgeModLoader** | 在运行时发现并实例化 NeoForge 模组 |
-| **BytecodeRewriter** | 基于 ASM 的类转换引擎 |
-| **ReForgedRemapper** | 将 NeoForge 类引用重写为 Forge 等效类 |
-| **NeoForgeEventBusAdapter** | 桥接事件总线系统的动态代理 |
-| **Shim 层** | NeoForge 类的替代 API 实现 |
-| **Mixin 系统** | 91 个补丁用于 Minecraft/Forge 兼容性 |
+| 命令 | 用途 |
+| --- | --- |
+| `./gradlew test` | 契约与失败路径回归 |
+| `./gradlew runClient` | 通过安装包启动流程运行开发客户端 |
+| `./gradlew runClient -PreforgedRunDir=build/smoke/client -PclientSmoke=true` | 最小模组夹具到达标题界面并退出 |
+| `./gradlew runGameTestServer -PreforgedRunDir=build/smoke/gametest -PpersistencePhase=write` | 附件测试与持久化样本写入 |
+| 同一命令改为 `-PpersistencePhase=read` | 新进程读取同一世界中的样本 |
 
-## 📦 安装
+专服需要接受 Minecraft EULA。启动服务与运行时使用隔离包名，以满足 Forge 发现流程和 Java 模块边界；对玩家仍交付一个文件。内部 ID、包名和缓存路径保留 `reforged`，避免破坏现有契约。
 
-1. 安装 Minecraft **1.21** 和 **Forge 51.0.33** 或更高版本
-2. 下载 ReForged 模组 JAR 文件
-3. 将 ReForged 和你的 NeoForge 模组放入 `.minecraft/mods/` 文件夹
-4. 启动游戏 — ReForged 将自动检测并加载 NeoForge 模组
+[稳定化记录](docs/STABILIZATION.md) 包含已实施修复、测试证据、历史 Issue、功能添加与后续验收。后续重点为真实两端联机、附件生命周期、JAR 事务边界、内嵌依赖版本选择与性能基线。
 
-**就这么简单！** 无需任何配置。
+## 来源与许可证
 
-## 🔨 从源码构建
-
-### 前置要求
-- Java 21 或更高版本
-- Git
-
-### 构建命令
-```bash
-# 克隆仓库
-git clone https://github.com/Mai-xiyu/ReForged.git
-cd ReForged
-
-# 构建模组
-./gradlew build
-
-# 编译后的 JAR 文件将位于 build/libs/ 目录
-```
-
-### 开发命令
-```bash
-./gradlew runClient        # 启动游戏客户端
-./gradlew runServer        # 启动专用服务器
-./gradlew runData          # 生成数据/资源
-./gradlew runGameTestServer # 运行游戏测试
-```
-
-## 🛠️ 工作原理
-
-### 1. **字节码重映射**
-ReForged 使用 ASM（Java 字节码操作框架）重写类引用：
-- `net.neoforged.neoforge.common.NeoForge` → `org.xiyu.reforged.shim.NeoForgeShim`
-- `net.neoforged.bus.api.IEventBus` → 自定义代理包装器
-- 事件注册 → 转发到 Forge 的事件总线
-
-### 2. **事件系统桥接**
-当 NeoForge 模组注册事件监听器时：
-```java
-NeoForge.EVENT_BUS.register(listener);
-```
-ReForged 会拦截并：
-- 分析监听器的 `@SubscribeEvent` 注解
-- 在 Forge 的 `MinecraftForge.EVENT_BUS` 上注册处理器
-- 根据兼容性需要包装/解包事件对象
-
-### 3. **资源包整合**
-NeoForge 模组 JAR 会自动注册为 Minecraft 资源包，使其包含的以下内容立即可用：
-- 纹理（`assets/`）
-- 模型
-- 配方（`data/`）
-- 标签
-- 其他数据文件
-
-## 📋 系统要求
-
-- **Minecraft：** 1.21
-- **Forge：** 51.0.33 或更高版本
-- **Java：** 21 或更高版本
-
-## 🤝 兼容性
-
-ReForged 旨在提供广泛的 NeoForge 模组兼容性，但可能存在一些限制：
-
-- ✅ 大多数 NeoForge API 功能受支持
-- ✅ 事件系统完全桥接
-- ✅ 注册系统（DeferredRegister）兼容
-- ✅ 创造模式标签页和物品组正常工作
-- ✅ 网络数据包得到处理
-- ⚠️ 某些高级 NeoForge 独有功能可能不可用
-- ⚠️ 与 NeoForge 深度集成的模组可能需要额外补丁
-
-### 🎯 模组规模与类型适配指南
-
-下表概述了不同类型和规模的 NeoForge 模组在 ReForged 上的预期运行状况。
-
-| 模组类型 | 典型示例 | 预期兼容度 | 说明 |
-|----------|----------|------------|------|
-| **纯物品/方块模组** | 新矿石、装饰方块、工具武器 | ✅ 优秀 | `DeferredRegister`、CreativeTabs、物品属性、食物组件等均已完整桥接 |
-| **世界生成模组** | 自定义矿脉、结构、生物群系修饰器 | ✅ 良好 | `BiomeModifier`/`StructureModifier` 框架已实现；数据包驱动的生成正常 |
-| **配方/合成扩展** | 自定义配方类型、条件配方 | ✅ 良好 | `ICondition` 条件系统与自定义 `RecipeSerializer` 可用 |
-| **Capability / 附件模组** | 能量、流体、物品存储 | ✅ 良好 | `IEnergyStorage`/`IFluidHandler`/`IItemHandler` 完整实现；`AttachmentType` 桥接至 Forge Capability |
-| **网络/数据包模组** | 自定义 Payload 通信 | ✅ 良好 | `PayloadRegistrar` 注册与双向 `reply()` 均已实现 |
-| **客户端渲染模组** | 自定义模型、粒子、HUD 覆盖 | ⚠️ 部分 | 基础模型加载（OBJ/JSON）、`RenderType` 注册、GUI 事件可用；深层 BakedModel 变换、自定义 shader 可能需要适配 |
-| **信息/工具提示模组** | Jade、WTHIT、JEI 插件 | ⚠️ 部分 | 取决于模组对 NeoForge 接口注入（extension interface）的依赖深度；Jade 已有针对性 Mixin 补丁 |
-| **大型内容模组** | Mekanism、Create 等 | ⚠️ 部分 | 已实现 DataMap、BiomeModifier 编解码、属性修改器事件、RenderBuffers 注入、DimensionSpecialEffects 注入、GUI 层级排序、Flywheel GPU 渲染管线等；大部分核心功能可运行，少量边缘路径可能需要额外补丁 |
-| **核心/底层模组** | 自定义 ModLoader 扩展、ServiceLoader 覆盖 | ❌ 不支持 | 直接操作 FML 内部或 NeoForge 引导阶段的模组无法通过 shim 兼容 |
-
-**规模参考：**
-
-- **小型模组**（< 50 个类）：仅使用 `DeferredRegister`、事件监听、简单 Capability → **绝大多数可直接运行**。
-- **中型模组**（50–300 个类）：包含自定义网络包、客户端渲染、数据生成、条件配方 → **大部分核心功能可运行**，少数高级特性可能需要额外适配。
-- **大型模组**（300+ 个类）：深度使用 DataMap、自定义 HolderSet、多方块实体同步、复杂渲染管线 → **需要逐项评估**，可能存在部分功能缺失。
-
-> **经验法则：** 如果一个 NeoForge 模组的核心功能仅依赖注册系统 + 事件总线 + 基础 Capability（物品/能量/流体），那么它大概率可以在 ReForged 上正常工作。模组对 NeoForge 独有的深层 vanilla patch 行为依赖越重，兼容风险越高。
-
-## 📊 当前完成度快照
-
-以下为截至 2026-06-11 的近似工程评估。
-
-| 子系统 | 权重 | 完成度 | 加权分 |
-|--------|------|--------|--------|
-| Mod 加载管线 | 20% | 94% | 18.8 |
-| 事件系统 | 20% | 98% | 19.6 |
-| 注册系统 | 15% | 96% | 14.4 |
-| 能力系统 | 10% | 96% | 9.6 |
-| 网络 / Payload | 8% | 84% | 6.72 |
-| 扩展 / 通用 API | 12% | 97% | 11.64 |
-| 客户端 | 10% | 98% | 9.8 |
-| Mixin 覆盖（含模组自带 Mixin） | 5% | 97% | 4.85 |
-| **总计** | **100%** |  | **~95%** |
-
-### 近期变更（03-09 → 04-27）
-
-#### Phase 1（03-09 → 03-10）：基础事件与 API 框架
-- **事件系统（重大更新）**：新增 **60 个 Forge wrapper 构造函数**，实现通过 `NeoForgeEventBusAdapter` 自动桥接事件。覆盖服务器生命周期、实体、生物、玩家、世界/区块、村庄、酿造、附魔、砂轮等事件类别。
-- **ClientHooks**：从 18 个方法扩展至 **108 个方法**，完整委托 `ForgeHooksClient`。
-- **EventHooks / CommonHooks**：新增 ~27 个缺失方法。
-- **客户端+通用事件包装器（~60 个）**：完整覆盖渲染、输入、生命周期、实体、区块等事件。
-- **注册系统**：实现 DataMap 系统、HolderSetType 编解码器、DeferredHolder 标签解析。
-
-#### Phase 2–4（03-10 → 03-28）：深层兼容性与 Create/暮色森林支持
-- **EntityEvent.Size**：补全 `pose`/`oldSize`/`newSize`/`newEyeHeight` 字段与 getter/setter。
-- **GuiGraphics 9-slice 渲染**：新增 `GuiGraphicsExtensionMixin`，实现 `blitWithBorder()`（9 宫格渲染）和 `blitInscribed()`（等比缩放渲染）。
-- **CommonHooks.extractLookupProvider**：实现多字段名重试（3 种映射名）+ 服务器回退机制。
-- **CommonHooks.tryDispenseShearsHarvestBlock**：通过 Forge `IForgeShearable` 接口实现剪刀收割逻辑。
-- **BiomeModifier 编解码器**：全部 4 种类型（AddFeatures/RemoveFeatures/AddSpawns/RemoveSpawns）使用 `RecordCodecBuilder` + `RegistryCodecs.homogeneousList()` 完整实现。
-- **StructureModifier**：`NoneStructureModifier` 使用 `MapCodec.unit()` 实现真实编解码器。
-- **ClientHooks 事件委托**：`getDetachedCameraDistance()` 触发 `CalculateDetachedCameraDistanceEvent`；`onScreenshot()` 投递至 NeoForge 事件总线。
-- **DimensionSpecialEffects**：反射注入模组注册的维度效果到原版静态 `EFFECTS` Map，修复暮色森林天空渲染。
-- **RenderBuffers**：反射注入自定义 `RenderType` 缓冲到 `BufferSource.fixedBuffers`，修复 Create 自定义渲染。
-- **IEntityWithComplexSpawn**：桥接至 Forge 的 `IEntityAdditionalSpawnData`，实现 `RegistryFriendlyByteBuf ↔ FriendlyByteBuf` 默认方法适配。
-
-#### Phase 5（03-28 → 03-30）：最终 5% 补全
-- **ItemStack 属性修改器钩子**：新增 Mixin 注入 `ItemStack.forEachModifier()` 两个重载，路由至 `IItemStackExtension.getAttributeModifiers()` 触发 `ItemAttributeModifierEvent`，修复 Create 动态属性修改。
-- **DataMap 基础设施**：`commonSetup` 阶段触发 `RegisterDataMapTypesEvent`；新增 `DataMapInitializer` 从原版 `ComposterBlock.COMPOSTABLES` 和 `ForgeHooks.getBurnTime()` 填充内置 DataMap（堆肥值、燃料燃烧时间）。
-- **EventHooks 事件活化**：
-  - `canEntityContinueSleeping()` → 触发 `CanContinueSleepingEvent` 并返回事件结果
-  - `getEnchantmentLevelSpecific()` / `getAllEnchantmentLevels()` → 触发 `GetEnchantmentLevelEvent` 支持附魔等级修改
-  - `getCustomSpawners()` → 触发 `ModifyCustomSpawnersEvent` 支持自定义刷怪器
-- **GetEnchantmentLevelEvent**：升级为携带可修改的 `Map<Holder<Enchantment>, Integer>` 附魔映射。
-- **ModifyCustomSpawnersEvent**：升级为携带可变 `List<CustomSpawner>` 刷怪器列表。
-- **RegisterGuiLayersEvent 排序修复**：`registerAbove()`/`registerBelow()` 现在使用 `ForgeLayeredDraw.addAbove()`/`addBelow()` 实现正确的 Z 轴排序，修复 Create 护目镜/蓝图叠层显示。
-
-#### Phase 6（03-30 → 04-05）：Create Accessor 桥接 与 Flywheel GPU 渲染管线
-- **Create Accessor 接口桥接（33 个接口）**：基于 BytecodeRewriter 的完整解决方案，覆盖 Create 全部 33 个 accessor/extension 接口。`CHECKCAST` 从 NeoForge accessor 类型重定向至原版 MC 目标类；`INVOKEINTERFACE` → `INVOKEVIRTUAL` 重写。新增 24 个 Mixin 文件，将 accessor 方法体注入原版类（如 `LevelRendererAccessorMixin`、`ParticleEngineAccessorMixin`、`GameRendererAccessorMixin`）。
-- **Flywheel Accessor 接口桥接（10 个接口）**：同样模式应用于 Flywheel 全部 7 个 accessor 接口 + 3 个 extension 接口。覆盖 `LevelRendererAccessor`、`AbstractClientPlayerAccessor`、`LightEngineAccessor`、`LayerLightSectionStorageAccessor`、`SkyDataLayerStorageMapAccessor`、`ModelPartAccessor`、`PoseStackAccessor`，以及 `LevelExtension`、`PoseStackExtension`、`SkyLightSectionStorageExtension`。
-- **Flywheel 渲染管线钩子**：`FlywheelLevelRendererMixin` 在 `LevelRenderer.renderLevel()` 的 4 个注入点插入钩子（beginRender、beforeBlockEntities、beforeCrumbling、endRender）。`FlywheelRenderBridge` 通过反射跨 NeoModClassLoader 边界调用 Flywheel 的 `FlwBackend` / `VisualizationManagerImpl`。
-- **EventBusHelper Boolean ClassCast 修复**：重写 `postAndReturn()` 完全绕过 IEventBus 代理 — 直接调用 `NeoForgeEventBusAdapter.dispatchFallback()` + `MinecraftForge.EVENT_BUS.post()`，消除 `ReloadLevelRendererEvent cannot be cast to Boolean` 异常。
-- **SkyLightSectionStorage 扩展**：复杂 Mixin 实现 Flywheel 的 `flywheel$skyDataLayer(long)` — 通过光照区段向上遍历，使用 `FlywheelSkyStorageMapHelper`（transformer 类加载器接口）桥接 `SkyDataLayerStorageMap` 的包私有字段。
-- **AABB.INFINITE CoreMod**：JavaScript 核心模组修补 `AABB` 类，添加 `INFINITE` 静态字段（NeoForge 新增，Forge 中不存在）。
-- **独立 ModelResourceLocation**：CoreMod 修复 `ModelResourceLocation.standalone()` 工厂方法，支持无方块状态变体的模型。
-- **Verifier 栈帧修复**：BytecodeRewriter 现在修补栈帧类型，将 NeoForge accessor 接口描述符替换为原版 MC 类描述符 — 修复 JVM 字节码验证的 `VerifyError`。
-
-#### Phase 8（06-11）：NeoForge 模组自带 Mixin 管线（重大架构补全）
-- **模组自带 Mixin 完整支持**：新增 `NeoMixinExtractor` —— 从 `neoforge.mods.toml` 的 `[[mixins]]` 提取模组自带的 Mixin 配置与类，经 BytecodeRewriter 重写后注入 Forge 发现占位 jar（manifest `MixinConfigs` 属性注册），由 Forge 的 Sponge Mixin 环境真正应用到原版类。SuperbWarfare（28 mixins）、GeckoLib（7）、Curios（13）、ywzj_vehicle（14）的自带 mixin 全部进入应用管线。
-- **跨类加载器身份管理**：占位 jar 保留 mixin 类引用闭包（含 Jar-in-Jar 类索引）；钉扎（parent-first）集合 = duck 接口 ∪ mixin 方法体引用 ∪ 钉扎类体引用一层扩展，再对签名引用与嵌套类组（nest group）做传递闭包 —— 消除 `ClassCastException`（ICustomKnockback 类）、`LinkageError`（接口签名 loader constraint）、nest 校验失败三类跨域错误；`@Mod` 入口类组保留 child 域语义。
-- **占位 jar 类规范化**：TRANSFORMER 侧副本统一 public 化（消除跨 loader 的 package-private/nest 访问限制）；`@SubscribeEvent` 私有方法提权（Forge EventAccessTransformer 拒绝 private 订阅者）；mixin 种子类保持原始访问级（Mixin 规范要求 static 成员 private）。
-- **mixin 配置软化**：`required=false` + `injectors.defaultRequire=0` —— 目标为 NeoForge 专属 vanilla patch 的注入失败降级为日志，不再炸整个游戏。
-- **MixinExtras 集成**：引入 `mixinextras-forge 0.5.4`（NeoForge 20.2.84+ 内置而 Forge 没有），`@WrapOperation` 等注解可用。
-- **LivingEntity.damageContainers CoreMod**：复刻 NeoForge 伤害管线字段补丁，模组 mixin 的 `@Shadow damageContainers` 可解析（SuperbWarfare LivingEntityMixin 完整应用，duck 接口注入成功）。
-- **NeoModClassLoader 解压模式**：mod jar 解压到 `.reforged/extracted/` 缓存（按 size+mtime 指纹复用），资源 URL 从 opaque `jar:` 变为 hierarchical `file:` —— 修复 `Paths.get(getResource(...))` + `URI.relativize` 模式崩溃（ywzj_vehicle 默认载具包解包）；资源查找改为 child-first（与 Neo union fs 语义对齐）。
-- **Jar-in-Jar 递归提取**：支持嵌套 JiJ（ywzj_vehicle → simplebedrockmodel → mae 两层嵌套）。
-- **接口桥接**：Neo `IItemHandler`/`IItemHandlerModifiable`/`IBrewingRecipe` shim 继承 Forge 对应接口（修复 PlayerInvWrapper 强转崩溃）；`IContainerFactory` 以 `RegistryFriendlyByteBuf` 为唯一抽象方法并桥接 Forge 的 `FriendlyByteBuf` 调用链（修复菜单打开 AbstractMethodError，且 `NetworkHooks.openScreen` 附加数据不再丢失）；`PotionBrewing.Builder.addRecipe` 字节码重定向至 Forge 的 `add`。
-- **DeferredRegister 幂等化**：全局注册表（registry|modid:name → holder）允许 TRANSFORMER/NeoMod 双域重复注册返回首个 holder（修复 GeckoLib `stack_animatable_id` 重复注册崩溃）。
-- **Patcher 自愈**：启动时清理孤儿 `.tmp`、从 `.neoforge-original` 备份重建丢失的占位 jar（修复 curios/geckolib/superbwarfare jar 静默消失）。
-- **验证结果**：16 个 NeoForge 模组实例（含 SuperbWarfare、ywzj_vehicle 首次成功）在客户端与专用服务器全部加载，服务器 4 秒内 Done 并稳定 tick，最终轮零崩溃、零 mixin 应用失败。
-
-#### Phase 7（04-27）：Create/Flywheel 稳定化与客户端 API 收敛
-- **Flywheel 渲染稳定化**：`FlywheelRenderBridge` 统一承担相机模式变化、render origin 变化、GL 状态同步、fog/light uniform 同步、延迟 visual 刷新、方块实体 visual 生命周期以及 vanilla 渲染跳过判定。
-- **第三人称稳定路径**：移除了诊断期第三人称 `afterEntities` 短路，让第一/第三人称走同一套状态同步逻辑，修复大面积黑色 Flywheel 几何体问题，并不再依赖高频日志维持稳定。
-- **重载/重进恢复**：对 renderer reload、相机切换、render origin 移动、光照和 section 失效增加有界 visual refresh，覆盖 `F3+A`、重进世界、方块更新和光照变化后的 Create/Flywheel visual 恢复。
-- **NeoForge 流体与 decorator API**：`FluidType.wrap()` 成为 Forge 到 NeoForge 流体包装的唯一入口；`FluidInteractionRegistry` 对齐 NeoForge 的 `FluidType + Function<FluidState, BlockState>` 形态；item decorator 统一归一到 Forge `IItemDecorator`。
-- **配方/数据包兼容**：补齐 NeoForge recipe condition、fluid ingredient、conditional recipe codec 与可选 entity-type tag 条目的 Forge 侧归一化，减少 Create 数据在安全世界创建阶段的告警。
-- **RegisterEvent classloader 加固**：Neo mod 加载现在显式锚定到游戏 classloader，事件回调执行时临时切换到 NeoMod 上下文 classloader，减少实体和注册初始化阶段的 AppClassLoader/TransformingClassLoader 分裂。
-- **模型与叠层修补**：附加几何现在传递真实 section 上下文，保留 AO/model data 桥接，并为 Create factory panel 保留 vanilla 叠层渲染，使中心物品/数量叠层能覆盖在 Flywheel visual 上。
-
-### 说明
-
-- 上述数值属于工程估算，不等同于正式测试通过率。
-- 共 865 个 Java 源文件，其中包含 688 个 `net.neoforged` shim 文件和 100 个 mixin 文件，另有 10 个 JavaScript CoreMod。
-- 仅剩 4 个 `UnsupportedOperationException` — 全部为设计性保留（如 `PartEntity.getAddEntityPacket()`、`ClientCommandSourceStack.getServer()`）。
-- 当前最大缺口：复杂实体同步协议、NeoForge 独有的深层 vanilla patch 行为（如 PistonPushReaction 扩展）、自定义底层 loader 集成，以及 Create/Flywheel 验证矩阵之外的大型模组边缘路径。
-
-## 📝 项目结构
-
-```
-ReForged/
-├── src/main/java/org/xiyu/reforged/
-│   ├── Reforged.java              # 主模组入口点
-│   ├── core/                      # 模组加载和 ASM 转换
-│   ├── shim/                      # API 替代层
-│   ├── bridge/                    # 事件和系统桥接
-│   ├── asm/                       # 高级字节码操作
-│   ├── mixin/                     # 用于兼容性的 Mixin 补丁
-│   └── util/                      # 工具类
-├── src/main/resources/
-│   ├── META-INF/
-│   │   ├── mods.toml             # Forge 模组元数据
-│   │   └── accesstransformer.cfg # 访问权限配置
-│   ├── reforged.mixins.json      # Mixin 配置
-│   └── coremods/                 # JavaScript CoreMod 补丁
-└── build.gradle                   # 构建配置
-```
-
-## 🔐 许可证
-
-LGPL-2.1-only
-
-## 🙋 支持
-
-如果遇到问题或有疑问：
-1. 检查 NeoForge 模组是否与 Forge 1.21 兼容
-2. 验证是否安装了 Java 21
-3. 检查游戏日志中的错误消息
-4. 在 GitHub 仓库上提出 issue
-
-## 🌟 致谢
-
-开发者：**Mai_xiyu**
-
-特别感谢：
-- Forge 团队提供 Forge 模组 API
-- NeoForge 团队提供 NeoForge 模组 API
-- ASM 和 Mixin 社区提供字节码操作工具
-
----
-
-**注意：** 这是一个社区项目，未经 Forge 或 NeoForge 团队的官方认可或支持。
+基于 [ReForged](https://github.com/Arc-Stuido/ReForged) 延续开发，保留源码历史与已有版权声明。许可证为 [LGPL-2.1-only](LICENSE)。ReForge 是独立实验项目。

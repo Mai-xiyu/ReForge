@@ -10,6 +10,8 @@ import org.slf4j.Logger;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -44,24 +46,48 @@ public final class NeoForgeEventBusAdapter {
      * This handles Flywheel/NeoForge custom events that extend net.neoforged.bus.api.Event
      * (rewritten to net.minecraftforge.eventbus.api.Event) but lack proper Forge ListenerList setup.
      */
-    private static final Map<Class<?>, List<Consumer<Object>>> FALLBACK_LISTENERS = new ConcurrentHashMap<>();
+    private static final Map<Class<?>, CopyOnWriteArrayList<FallbackRegistration>> FALLBACK_LISTENERS =
+            new ConcurrentHashMap<>();
+
+    private record FallbackRegistration(IEventBus bus, Object owner, Class<?> eventType, Consumer<Object> listener,
+                                        EventPriority priority, boolean receiveCancelled) {}
 
     /**
      * Dispatch an event to fallback listeners. Called by post() interception and ModLoader.postEvent().
      */
-    @SuppressWarnings("unchecked")
     public static boolean dispatchFallback(Object event) {
-        List<Consumer<Object>> listeners = FALLBACK_LISTENERS.get(event.getClass());
-        if (listeners == null || listeners.isEmpty()) return false;
-        for (Consumer<Object> listener : listeners) {
+        IEventBus bus = NeoForgeModLoader.getForgeModBus();
+        return bus != null && dispatchFallback(bus, event);
+    }
+
+    public static boolean dispatchFallback(IEventBus bus, Object event) {
+        if (event == null) return false;
+        List<FallbackRegistration> listeners = matchingFallbackListeners(bus, event);
+        if (listeners.isEmpty()) return false;
+        listeners.sort(Comparator.comparingInt(registration -> registration.priority().ordinal()));
+        for (FallbackRegistration registration : listeners) {
+            if (event instanceof Event forgeEvent && forgeEvent.isCancelable()
+                    && forgeEvent.isCanceled() && !registration.receiveCancelled()) {
+                continue;
+            }
             try {
-                invokeConsumerWithPoseGuard(listener, event);
+                invokeConsumerWithPoseGuard(registration.listener(), event);
             } catch (Throwable t) {
-                LOGGER.error("[ReForged] Fallback listener error for {}: {}",
-                        event.getClass().getSimpleName(), t.getMessage(), t);
+                throw handlerFailure("Fallback listener for " + event.getClass().getName(), t);
             }
         }
-        return true;
+        return event instanceof Event forgeEvent && forgeEvent.isCancelable() && forgeEvent.isCanceled();
+    }
+
+    private static List<FallbackRegistration> matchingFallbackListeners(IEventBus bus, Object event) {
+        List<FallbackRegistration> listeners = new ArrayList<>();
+        for (var entry : FALLBACK_LISTENERS.entrySet()) {
+            if (entry.getKey().isAssignableFrom(event.getClass())) {
+                for (FallbackRegistration registration : entry.getValue())
+                    if (registration.bus() == bus) listeners.add(registration);
+            }
+        }
+        return listeners;
     }
 
     /**
@@ -93,26 +119,34 @@ public final class NeoForgeEventBusAdapter {
                     // then also delegate to Forge's bus for normal events.
                     if ("post".equals(name) && args != null && args.length == 1) {
                         Object event = args[0];
-                        boolean dispatched = dispatchFallback(event);
+                        boolean canceled = dispatchFallback(delegate, event);
                         // Also delegate to Forge bus if the event is a Forge Event
                         if (event instanceof Event forgeEvent) {
-                            try {
-                                delegate.post(forgeEvent);
-                            } catch (Throwable t) {
-                                if (!dispatched) {
-                                    LOGGER.debug("[ReForged] Forge bus post() failed for {}: {}",
-                                            event.getClass().getSimpleName(), t.getMessage());
-                                }
-                            }
+                            canceled = delegate.post(forgeEvent) || canceled;
                         }
                         // Return type depends on which post() overload was invoked:
                         // Forge's post(Event) returns boolean, NeoForge's post(Event) returns Event.
                         // The Dynamic Proxy will auto-unbox the return for primitive types,
                         // so we MUST return a Boolean when the resolved method returns boolean.
                         if (method.getReturnType() == boolean.class) {
-                            return dispatched;
+                            return canceled;
                         }
                         return event;
+                    }
+
+                    if ("unregister".equals(name) && args != null && args.length == 1) {
+                        unregisterFallback(delegate, args[0]);
+                        unregisterBridged(delegate, args[0]);
+                        try {
+                            Method delegateMethod = findMatchingMethod(delegate.getClass(), method);
+                            if (delegateMethod != null) {
+                                delegateMethod.setAccessible(true);
+                                return delegateMethod.invoke(delegate, args);
+                            }
+                        } catch (Throwable t) {
+                            LOGGER.debug("[ReForged] Delegating unregister() failed: {}", t.getMessage());
+                        }
+                        return null;
                     }
 
                     // Invoke default methods on the NeoForge IEventBus interface directly.
@@ -161,9 +195,7 @@ public final class NeoForgeEventBusAdapter {
         try {
             methods = clazz.getDeclaredMethods();
         } catch (Throwable t) {
-            LOGGER.warn("[ReForged] Cannot scan methods of {} — unresolvable types: {}",
-                    clazz.getSimpleName(), t.getMessage());
-            return;
+            throw handlerFailure("Cannot scan subscriber " + clazz.getName(), t);
         }
 
         int registered = 0;
@@ -196,8 +228,7 @@ public final class NeoForgeEventBusAdapter {
                     registered++;
                 }
             } catch (Throwable t) {
-                LOGGER.warn("[ReForged] Skipping unresolvable method {}.{}: {}",
-                        clazz.getSimpleName(), method.getName(), t.getMessage());
+                throw handlerFailure("Cannot register subscriber " + clazz.getName() + "." + method.getName(), t);
             }
         }
 
@@ -240,11 +271,7 @@ public final class NeoForgeEventBusAdapter {
                             forgeEvent.setCanceled(true);
                         }
                     } catch (Throwable t) {
-                        LOGGER.error("[ReForged] NeoForge wrapped handler error: {}.{}",
-                                method.getDeclaringClass().getSimpleName(), method.getName(), t);
-                        if (t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null) {
-                            LOGGER.error("[ReForged] Wrapped handler root cause:", t.getCause());
-                        }
+                        throw handlerFailure("Wrapped subscriber " + method, t);
                     }
                 };
 
@@ -255,7 +282,7 @@ public final class NeoForgeEventBusAdapter {
                     IEventBus modBus = NeoForgeModLoader.getForgeModBus();
                     if (modBus != null) targetBus = modBus;
                 }
-                targetBus.addListener(priority, receiveCancelled, forgeEventType, (Consumer) bridgeHandler);
+                addBridged(delegate, targetBus, target, priority, receiveCancelled, forgeEventType, bridgeHandler);
                 LOGGER.info("[ReForged] Registered wrapped @SubscribeEvent: {}.{}({}) \u2192 Forge: {}{}",
                         method.getDeclaringClass().getSimpleName(), method.getName(),
                         neoType.getSimpleName(), forgeEventType.getSimpleName(),
@@ -285,20 +312,20 @@ public final class NeoForgeEventBusAdapter {
                 Consumer<Event> directHandler = event -> {
                     if (!finalNeoType.isInstance(event)) return;
                     try { invokeMethodWithPoseGuard(method, invokeTarget, event); }
-                    catch (Throwable t) { LOGGER.error("[ReForged] NeoForge handler error: {}", method.getName(), t); }
+                    catch (Throwable t) { throw handlerFailure("Subscriber " + method, t); }
                 };
                 try {
-                    targetBus.addListener(priority, receiveCancelled, (Class) eventType, (Consumer) directHandler);
+                    addBridged(delegate, targetBus, target, priority, receiveCancelled, eventType, directHandler);
                     LOGGER.info("[ReForged] Registered direct NeoForge @SubscribeEvent: {}.{}({}){}",
                             method.getDeclaringClass().getSimpleName(), method.getName(), neoType.getSimpleName(),
                             isModBusEvent ? " (MOD bus)" : "");
                 } catch (Throwable t) {
-                    FALLBACK_LISTENERS.computeIfAbsent(eventType, k -> new CopyOnWriteArrayList<>())
-                            .add(event -> {
+                    registerFallback(targetBus, target, eventType,
+                            event -> {
                                 if (event instanceof Event forgeEvent) {
                                     directHandler.accept(forgeEvent);
                                 }
-                            });
+                            }, priority, receiveCancelled);
                     LOGGER.info("[ReForged] Forge bus registration failed for @SubscribeEvent {}.{}({}) - using fallback listener: {}",
                             method.getDeclaringClass().getSimpleName(), method.getName(), neoType.getSimpleName(),
                             t.getMessage());
@@ -310,8 +337,7 @@ public final class NeoForgeEventBusAdapter {
                             "is neither a Forge Event nor a NeoForge wrapper",
                     method.getDeclaringClass().getSimpleName(), method.getName(), neoType.getName());
         } catch (Throwable t) {
-            LOGGER.warn("[ReForged] Skipping handler {}.{}: {}",
-                    method.getName(), method.getDeclaringClass().getSimpleName(), t.getMessage());
+            throw handlerFailure("Cannot register handler " + method, t);
         }
         return false;
     }
@@ -350,8 +376,7 @@ public final class NeoForgeEventBusAdapter {
             consumer = c;
         }
         if (consumer == null) {
-            LOGGER.warn("[ReForged] addListener called with no Consumer argument");
-            return;
+            throw new IllegalArgumentException("addListener requires a Consumer argument");
         }
 
         // Parse remaining args (priority, receiveCancelled, eventType)
@@ -373,9 +398,7 @@ public final class NeoForgeEventBusAdapter {
             eventType = extractEventTypeFromConsumer(consumer);
         }
         if (eventType == null) {
-            LOGGER.warn("[ReForged] Could not determine event type for addListener — Consumer: {}",
-                    consumer.getClass().getName());
-            return;
+            throw new IllegalArgumentException("Cannot determine addListener event type for " + consumer.getClass().getName());
         }
 
         // Case 1: NeoForge wrapper event (has constructor taking a Forge Event subclass)
@@ -413,16 +436,7 @@ public final class NeoForgeEventBusAdapter {
                         forgeEvent.setCanceled(true);
                     }
                 } catch (Throwable t) {
-                    String message = t.getMessage() != null ? t.getMessage() : "";
-                    boolean balmConfigNull = message.contains("config") && message.contains("null")
-                            && stackContains(t, "net.blay09.mods.balm");
-                    if (balmConfigNull) {
-                        LOGGER.debug("[ReForged] Suppressed Balm config-null error in {} handler; config not ready yet",
-                                finalEventType.getSimpleName());
-                        return;
-                    }
-                    LOGGER.error("[ReForged] Wrapped addListener handler error for {}: {}",
-                            finalEventType.getSimpleName(), t.getMessage(), t);
+                    throw handlerFailure("Wrapped listener for " + finalEventType.getName(), t);
                 }
             };
 
@@ -438,7 +452,7 @@ public final class NeoForgeEventBusAdapter {
                             eventType.getSimpleName(), delegate == modBus ? "mod bus" : "game bus");
                 }
             }
-            targetBus.addListener(priority, receiveCancelled, forgeEventType, (Consumer) bridgeListener);
+            addBridged(delegate, targetBus, consumer, priority, receiveCancelled, forgeEventType, bridgeListener);
             LOGGER.info("[ReForged] Registered wrapped addListener: {} → {}{}",
                     eventType.getSimpleName(), forgeEventType.getSimpleName(),
                     isModBusEvent ? " (MOD bus)" : "");
@@ -451,21 +465,13 @@ public final class NeoForgeEventBusAdapter {
             Class<?> finalEventType2 = eventType;
             Consumer<?> finalConsumer2 = consumer;
             try {
-                delegate.addListener(priority, receiveCancelled,
-                    (Class) eventType, (Consumer<Event>) event -> {
+                addBridged(delegate, delegate, consumer, priority, receiveCancelled,
+                    eventType, (Consumer<Event>) event -> {
                         if (!finalEventType2.isInstance(event)) return;
                         try {
                             invokeConsumerWithPoseGuard(finalConsumer2, event);
                         } catch (Throwable t2) {
-                            String msg = t2.getMessage() != null ? t2.getMessage() : "";
-                            if (msg.contains("config") && msg.contains("null")
-                                    && stackContains(t2, "net.blay09.mods.balm")) {
-                                LOGGER.debug("[ReForged] Suppressed Balm config-null error in direct {} handler",
-                                        finalEventType2.getSimpleName());
-                                return;
-                            }
-                            LOGGER.error("[ReForged] Direct addListener handler error for {}: {}",
-                                    finalEventType2.getSimpleName(), t2.getMessage(), t2);
+                            throw handlerFailure("Listener for " + finalEventType2.getName(), t2);
                         }
                     });
                 LOGGER.info("[ReForged] Registered direct addListener for {}", eventType.getSimpleName());
@@ -474,22 +480,58 @@ public final class NeoForgeEventBusAdapter {
                 // (e.g. Flywheel's custom events). Store in fallback map instead.
                 LOGGER.info("[ReForged] Forge bus registration failed for {} — using fallback listener: {}",
                         eventType.getName(), t.getMessage());
-                FALLBACK_LISTENERS.computeIfAbsent(finalEventType2, k -> new CopyOnWriteArrayList<>())
-                        .add(event -> {
+                registerFallback(delegate, finalConsumer2, finalEventType2,
+                        event -> {
                             if (!finalEventType2.isInstance(event)) return;
                             try {
                                 invokeConsumerWithPoseGuard(finalConsumer2, event);
                             } catch (Throwable t2) {
-                                LOGGER.error("[ReForged] Fallback handler error for {}: {}",
-                                        finalEventType2.getSimpleName(), t2.getMessage(), t2);
+                                throw handlerFailure("Fallback listener for " + finalEventType2.getName(), t2);
                             }
-                        });
+                        }, priority, receiveCancelled);
             }
             return;
         }
 
-        LOGGER.warn("[ReForged] Cannot register addListener for {} — not a Forge Event or NeoForge wrapper",
-                eventType.getName());
+        throw new IllegalArgumentException("Unsupported addListener event type " + eventType.getName());
+    }
+
+    private static RuntimeException handlerFailure(String context, Throwable failure) {
+        if (failure instanceof java.lang.reflect.InvocationTargetException && failure.getCause() != null) {
+            failure = failure.getCause();
+        }
+        if (failure instanceof Error error) throw error;
+        return new IllegalStateException(context, failure);
+    }
+
+    private record BridgedRegistration(IEventBus sourceBus, IEventBus targetBus, Object owner, Consumer<?> listener) {}
+    private static final CopyOnWriteArrayList<BridgedRegistration> BRIDGED_LISTENERS = new CopyOnWriteArrayList<>();
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static void addBridged(IEventBus source, IEventBus target, Object owner, EventPriority priority,
+                                   boolean receiveCancelled, Class<?> type, Consumer<?> listener) {
+        target.addListener(priority, receiveCancelled, (Class) type, (Consumer) listener);
+        BRIDGED_LISTENERS.add(new BridgedRegistration(source, target, owner, listener));
+    }
+
+    private static void unregisterBridged(IEventBus source, Object owner) {
+        BRIDGED_LISTENERS.removeIf(entry -> {
+            if (entry.sourceBus() != source || entry.owner() != owner) return false;
+            entry.targetBus().unregister(entry.listener());
+            return true;
+        });
+    }
+
+    private static void registerFallback(IEventBus bus, Object owner, Class<?> eventType, Consumer<Object> listener,
+                                         EventPriority priority, boolean receiveCancelled) {
+        FALLBACK_LISTENERS.computeIfAbsent(eventType, ignored -> new CopyOnWriteArrayList<>())
+                .add(new FallbackRegistration(bus, owner, eventType, listener, priority, receiveCancelled));
+    }
+
+    private static void unregisterFallback(IEventBus bus, Object owner) {
+        if (owner == null) return;
+        FALLBACK_LISTENERS.values().forEach(list -> list.removeIf(entry -> entry.bus() == bus && entry.owner() == owner));
+        FALLBACK_LISTENERS.entrySet().removeIf(entry -> entry.getValue().isEmpty());
     }
 
     @SuppressWarnings("unchecked")
@@ -622,20 +664,4 @@ public final class NeoForgeEventBusAdapter {
         }
     }
 
-    private static boolean stackContains(Throwable throwable, String token) {
-        if (throwable == null || token == null || token.isBlank()) {
-            return false;
-        }
-        Throwable current = throwable;
-        while (current != null) {
-            for (StackTraceElement element : current.getStackTrace()) {
-                String className = element.getClassName();
-                if (className != null && className.contains(token)) {
-                    return true;
-                }
-            }
-            current = current.getCause();
-        }
-        return false;
-    }
 }

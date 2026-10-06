@@ -37,7 +37,7 @@ public final class NeoModInstantiator {
      * @param modClass   the mod class to instantiate
      * @param busAdapter the NeoForge IEventBus adapter
      * @param modBus     the Forge mod event bus
-     * @return the mod instance, or null if no compatible constructor was found
+     * @return the mod instance; unsupported required constructors throw
      */
     @SuppressWarnings("removal")
     public static Object instantiateMod(Class<?> modClass, net.neoforged.bus.api.IEventBus busAdapter,
@@ -239,7 +239,7 @@ public final class NeoModInstantiator {
         }
 
         LOGGER.error("[ReForged] No compatible constructor found for {} (tried exact + name-based matching)", modClass.getName());
-        return null;
+        throw new IllegalStateException("No supported constructor for required NeoForge mod " + modClass.getName());
     }
 
     /**

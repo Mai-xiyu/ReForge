@@ -371,7 +371,7 @@ public final class FlywheelRenderBridge {
         if (!available) return;
         try {
             Object event = ctorEndReloadEvent.newInstance(mc, rm, isInitial, error);
-            NeoForgeEventBusAdapter.dispatchFallback(event);
+            NeoForgeEventBusAdapter.dispatchFallback(net.minecraftforge.common.MinecraftForge.EVENT_BUS, event);
             LOGGER.info("[ReForged] FlywheelRenderBridge: EndClientResourceReloadEvent dispatched (initial={})", isInitial);
         } catch (Throwable t) {
             LOGGER.warn("[ReForged] FlywheelRenderBridge: EndClientResourceReloadEvent failed: {}", t.getMessage(), t);
@@ -400,7 +400,7 @@ public final class FlywheelRenderBridge {
             // Fallback: construct and dispatch directly
             try {
                 Object event = ctorReloadLevelRendererEvent.newInstance(level);
-                NeoForgeEventBusAdapter.dispatchFallback(event);
+                NeoForgeEventBusAdapter.dispatchFallback(net.minecraftforge.common.MinecraftForge.EVENT_BUS, event);
                 LOGGER.info("[ReForged] FlywheelRenderBridge: ReloadLevelRendererEvent dispatched via fallback");
             } catch (Throwable t2) {
                 LOGGER.warn("[ReForged] FlywheelRenderBridge: ReloadLevelRendererEvent failed: {}", t2.getMessage());

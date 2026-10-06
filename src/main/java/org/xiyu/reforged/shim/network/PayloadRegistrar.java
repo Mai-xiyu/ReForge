@@ -7,6 +7,7 @@ import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.PacketFlow;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.neoforged.neoforge.network.handling.IPayloadHandler;
+import net.neoforged.neoforge.network.registration.HandlerThread;
 import org.slf4j.Logger;
 
 import java.util.Map;
@@ -37,10 +38,13 @@ public final class PayloadRegistrar {
 
     private final String version;
     private boolean optional;
+    private HandlerThread handlerThread;
 
     public PayloadRegistrar(String version) {
+        if (version == null || version.isBlank()) throw new IllegalArgumentException("Payload version must not be blank");
         this.version = version;
         this.optional = false;
+        this.handlerThread = HandlerThread.MAIN;
         REGISTRARS.put(version, this);
         LOGGER.debug("[ReForged] PayloadRegistrar created for version '{}'", version);
     }
@@ -48,6 +52,7 @@ public final class PayloadRegistrar {
     private PayloadRegistrar(PayloadRegistrar source) {
         this.version = source.version;
         this.optional = source.optional;
+        this.handlerThread = source.handlerThread;
     }
 
     // ---- Play Phase ----
@@ -61,7 +66,7 @@ public final class PayloadRegistrar {
             StreamCodec<? super RegistryFriendlyByteBuf, T> codec,
             IPayloadHandler<T> handler) {
         LOGGER.info("[ReForged] PayloadRegistrar.playToServer: type={}, version={}", type.id(), version);
-        PayloadChannelRegistry.registerPayload(type, (StreamCodec) codec, handler, PacketFlow.SERVERBOUND);
+        register(type, (StreamCodec) codec, handler, PacketFlow.SERVERBOUND, PayloadChannelRegistry.PayloadPhase.PLAY);
         return this;
     }
 
@@ -74,7 +79,7 @@ public final class PayloadRegistrar {
             StreamCodec<? super RegistryFriendlyByteBuf, T> codec,
             IPayloadHandler<T> handler) {
         LOGGER.info("[ReForged] PayloadRegistrar.playToClient: type={}, version={}", type.id(), version);
-        PayloadChannelRegistry.registerPayload(type, (StreamCodec) codec, handler, PacketFlow.CLIENTBOUND);
+        register(type, (StreamCodec) codec, handler, PacketFlow.CLIENTBOUND, PayloadChannelRegistry.PayloadPhase.PLAY);
         return this;
     }
 
@@ -87,7 +92,7 @@ public final class PayloadRegistrar {
             StreamCodec<? super RegistryFriendlyByteBuf, T> codec,
             IPayloadHandler<T> handler) {
         LOGGER.info("[ReForged] PayloadRegistrar.playBidirectional: type={}, version={}", type.id(), version);
-        PayloadChannelRegistry.registerPayload(type, (StreamCodec) codec, handler, null);
+        register(type, (StreamCodec) codec, handler, null, PayloadChannelRegistry.PayloadPhase.PLAY);
         return this;
     }
 
@@ -99,7 +104,7 @@ public final class PayloadRegistrar {
             StreamCodec<? super FriendlyByteBuf, T> codec,
             IPayloadHandler<T> handler) {
         LOGGER.info("[ReForged] PayloadRegistrar.configurationToServer: type={}", type.id());
-        PayloadChannelRegistry.registerPayload(type, codec, handler, PacketFlow.SERVERBOUND);
+        register(type, codec, handler, PacketFlow.SERVERBOUND, PayloadChannelRegistry.PayloadPhase.CONFIGURATION);
         return this;
     }
 
@@ -109,7 +114,7 @@ public final class PayloadRegistrar {
             StreamCodec<? super FriendlyByteBuf, T> codec,
             IPayloadHandler<T> handler) {
         LOGGER.info("[ReForged] PayloadRegistrar.configurationToClient: type={}", type.id());
-        PayloadChannelRegistry.registerPayload(type, codec, handler, PacketFlow.CLIENTBOUND);
+        register(type, codec, handler, PacketFlow.CLIENTBOUND, PayloadChannelRegistry.PayloadPhase.CONFIGURATION);
         return this;
     }
 
@@ -119,7 +124,7 @@ public final class PayloadRegistrar {
             StreamCodec<? super FriendlyByteBuf, T> codec,
             IPayloadHandler<T> handler) {
         LOGGER.info("[ReForged] PayloadRegistrar.configurationBidirectional: type={}", type.id());
-        PayloadChannelRegistry.registerPayload(type, codec, handler, null);
+        register(type, codec, handler, null, PayloadChannelRegistry.PayloadPhase.CONFIGURATION);
         return this;
     }
 
@@ -131,7 +136,7 @@ public final class PayloadRegistrar {
             StreamCodec<? super FriendlyByteBuf, T> codec,
             IPayloadHandler<T> handler) {
         LOGGER.info("[ReForged] PayloadRegistrar.commonToServer: type={}", type.id());
-        PayloadChannelRegistry.registerPayload(type, codec, handler, PacketFlow.SERVERBOUND);
+        register(type, codec, handler, PacketFlow.SERVERBOUND, PayloadChannelRegistry.PayloadPhase.COMMON);
         return this;
     }
 
@@ -141,7 +146,7 @@ public final class PayloadRegistrar {
             StreamCodec<? super FriendlyByteBuf, T> codec,
             IPayloadHandler<T> handler) {
         LOGGER.info("[ReForged] PayloadRegistrar.commonToClient: type={}", type.id());
-        PayloadChannelRegistry.registerPayload(type, codec, handler, PacketFlow.CLIENTBOUND);
+        register(type, codec, handler, PacketFlow.CLIENTBOUND, PayloadChannelRegistry.PayloadPhase.COMMON);
         return this;
     }
 
@@ -151,7 +156,7 @@ public final class PayloadRegistrar {
             StreamCodec<? super FriendlyByteBuf, T> codec,
             IPayloadHandler<T> handler) {
         LOGGER.info("[ReForged] PayloadRegistrar.commonBidirectional: type={}", type.id());
-        PayloadChannelRegistry.registerPayload(type, codec, handler, null);
+        register(type, codec, handler, null, PayloadChannelRegistry.PayloadPhase.COMMON);
         return this;
     }
 
@@ -161,7 +166,7 @@ public final class PayloadRegistrar {
     public <T> PayloadRegistrar playToServer(Object type, Object streamCodec, Object handler) {
         LOGGER.info("[ReForged] PayloadRegistrar.playToServer (Object): type={}, version={}", type, version);
         if (type instanceof CustomPacketPayload.Type<?> t && streamCodec instanceof StreamCodec sc && handler instanceof IPayloadHandler h) {
-            PayloadChannelRegistry.registerPayload((CustomPacketPayload.Type) t, sc, h, PacketFlow.SERVERBOUND);
+            register((CustomPacketPayload.Type) t, sc, h, PacketFlow.SERVERBOUND, PayloadChannelRegistry.PayloadPhase.PLAY);
         } else {
             LOGGER.warn("[ReForged] PayloadRegistrar.playToServer: unrecognized types — type={}, codec={}, handler={}", 
                     type != null ? type.getClass() : null, 
@@ -175,7 +180,7 @@ public final class PayloadRegistrar {
     public <T> PayloadRegistrar playToClient(Object type, Object streamCodec, Object handler) {
         LOGGER.info("[ReForged] PayloadRegistrar.playToClient (Object): type={}, version={}", type, version);
         if (type instanceof CustomPacketPayload.Type<?> t && streamCodec instanceof StreamCodec sc && handler instanceof IPayloadHandler h) {
-            PayloadChannelRegistry.registerPayload((CustomPacketPayload.Type) t, sc, h, PacketFlow.CLIENTBOUND);
+            register((CustomPacketPayload.Type) t, sc, h, PacketFlow.CLIENTBOUND, PayloadChannelRegistry.PayloadPhase.PLAY);
         } else {
             LOGGER.warn("[ReForged] PayloadRegistrar.playToClient: unrecognized types");
         }
@@ -186,7 +191,7 @@ public final class PayloadRegistrar {
     public <T> PayloadRegistrar playBidirectional(Object type, Object streamCodec, Object handler) {
         LOGGER.info("[ReForged] PayloadRegistrar.playBidirectional (Object): type={}, version={}", type, version);
         if (type instanceof CustomPacketPayload.Type<?> t && streamCodec instanceof StreamCodec sc && handler instanceof IPayloadHandler h) {
-            PayloadChannelRegistry.registerPayload((CustomPacketPayload.Type) t, sc, h, null);
+            register((CustomPacketPayload.Type) t, sc, h, null, PayloadChannelRegistry.PayloadPhase.PLAY);
         } else {
             LOGGER.warn("[ReForged] PayloadRegistrar.playBidirectional: unrecognized types");
         }
@@ -197,7 +202,7 @@ public final class PayloadRegistrar {
     public <T> PayloadRegistrar configurationToServer(Object type, Object streamCodec, Object handler) {
         LOGGER.info("[ReForged] PayloadRegistrar.configurationToServer (Object): type={}", type);
         if (type instanceof CustomPacketPayload.Type<?> t && streamCodec instanceof StreamCodec sc && handler instanceof IPayloadHandler h) {
-            PayloadChannelRegistry.registerPayload((CustomPacketPayload.Type) t, sc, h, PacketFlow.SERVERBOUND);
+            register((CustomPacketPayload.Type) t, sc, h, PacketFlow.SERVERBOUND, PayloadChannelRegistry.PayloadPhase.CONFIGURATION);
         }
         return this;
     }
@@ -206,7 +211,7 @@ public final class PayloadRegistrar {
     public <T> PayloadRegistrar configurationToClient(Object type, Object streamCodec, Object handler) {
         LOGGER.info("[ReForged] PayloadRegistrar.configurationToClient (Object): type={}", type);
         if (type instanceof CustomPacketPayload.Type<?> t && streamCodec instanceof StreamCodec sc && handler instanceof IPayloadHandler h) {
-            PayloadChannelRegistry.registerPayload((CustomPacketPayload.Type) t, sc, h, PacketFlow.CLIENTBOUND);
+            register((CustomPacketPayload.Type) t, sc, h, PacketFlow.CLIENTBOUND, PayloadChannelRegistry.PayloadPhase.CONFIGURATION);
         }
         return this;
     }
@@ -215,7 +220,7 @@ public final class PayloadRegistrar {
     public <T> PayloadRegistrar configurationBidirectional(Object type, Object streamCodec, Object handler) {
         LOGGER.info("[ReForged] PayloadRegistrar.configurationBidirectional (Object): type={}", type);
         if (type instanceof CustomPacketPayload.Type<?> t && streamCodec instanceof StreamCodec sc && handler instanceof IPayloadHandler h) {
-            PayloadChannelRegistry.registerPayload((CustomPacketPayload.Type) t, sc, h, null);
+            register((CustomPacketPayload.Type) t, sc, h, null, PayloadChannelRegistry.PayloadPhase.CONFIGURATION);
         }
         return this;
     }
@@ -236,19 +241,43 @@ public final class PayloadRegistrar {
      * Returns a new registrar with a different version.
      */
     public PayloadRegistrar versioned(String version) {
-        return new PayloadRegistrar(version);
+        PayloadRegistrar result = new PayloadRegistrar(version);
+        result.optional = optional;
+        result.handlerThread = handlerThread;
+        return result;
     }
 
     /**
      * Returns a new registrar that executes handlers on a specific thread.
-     * In Forge, we always use consumerMainThread, so this is a no-op.
      */
     public PayloadRegistrar executesOn(Object thread) {
-        LOGGER.debug("[ReForged] PayloadRegistrar.executesOn() called (no-op on Forge)");
-        return this;
+        PayloadRegistrar result = new PayloadRegistrar(this);
+        if (thread instanceof HandlerThread handlerThread) {
+            result.handlerThread = handlerThread;
+        } else {
+            throw new IllegalArgumentException("Unsupported payload handler thread: " + thread);
+        }
+        return result;
     }
 
     public String getVersion() {
         return version;
+    }
+
+    public boolean isOptional() {
+        return optional;
+    }
+
+    public HandlerThread getHandlerThread() {
+        return handlerThread;
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private <T extends CustomPacketPayload> void register(CustomPacketPayload.Type<T> type,
+                                                            StreamCodec codec,
+                                                            IPayloadHandler<T> handler,
+                                                            PacketFlow flow,
+                                                            PayloadChannelRegistry.PayloadPhase phase) {
+        PayloadChannelRegistry.registerPayload(type, codec, handler, flow, phase, version, optional, handlerThread);
     }
 }

@@ -17,6 +17,10 @@ public class PayloadRegistrar {
         this.delegate = new org.xiyu.reforged.shim.network.PayloadRegistrar(version);
     }
 
+    public PayloadRegistrar(org.xiyu.reforged.shim.network.PayloadRegistrar delegate) {
+        this.delegate = delegate;
+    }
+
     public String getVersion() { return delegate.getVersion(); }
 
     public <T extends CustomPacketPayload> PayloadRegistrar playToServer(
@@ -88,21 +92,18 @@ public class PayloadRegistrar {
     }
 
     public PayloadRegistrar optional() {
-        delegate.optional();
-        return this;
+        return new PayloadRegistrar(delegate.optional());
     }
 
     public PayloadRegistrar versioned(String version) {
-        return new PayloadRegistrar(version);
+        return new PayloadRegistrar(delegate.versioned(version));
     }
 
     public PayloadRegistrar executesOn(Object thread) {
-        delegate.executesOn(thread);
-        return this;
+        return new PayloadRegistrar(delegate.executesOn(thread));
     }
 
     public PayloadRegistrar executesOn(HandlerThread thread) {
-        delegate.executesOn(thread);
-        return this;
+        return new PayloadRegistrar(delegate.executesOn(thread));
     }
 }

@@ -216,6 +216,17 @@ public class DeferredRegister<T> {
         }
         if (isNoOp) {
             ResourceLocation id = ResourceLocation.fromNamespaceAndPath(modid, name);
+            if (registryKey != null && "neoforge:attachment_types".equals(registryKey.location().toString())) {
+                I value = sup.get();
+                if (!(value instanceof net.neoforged.neoforge.attachment.AttachmentType<?> type)) {
+                    throw new IllegalArgumentException("Invalid attachment registration: " + id);
+                }
+                net.neoforged.neoforge.attachment.AttachmentType.register(id.toString(), type);
+                ResourceKey<T> entryKey = ResourceKey.create((ResourceKey<Registry<T>>) registryKey, id);
+                DeferredHolder<T, I> holder = (DeferredHolder<T, I>) DeferredHolder.createDirect(entryKey, () -> value);
+                entries.add(holder);
+                return holder;
+            }
             LOGGER.debug("[ReForged] No-op register (pending): {}", id);
             // Buffer the entry — it may be flushed into a custom registry later by makeRegistry()
             pendingEntries.put(name, (Supplier<? extends T>) sup);

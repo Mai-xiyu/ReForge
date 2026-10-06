@@ -9,6 +9,8 @@ import java.util.Objects;
 import java.util.function.Predicate;
 
 public abstract class AttachmentHolder implements IAttachmentHolder {
+    public static final String ATTACHMENTS_NBT_KEY = "neoforge:attachments";
+    private net.minecraft.nbt.CompoundTag unresolvedAttachments = new net.minecraft.nbt.CompoundTag();
     @Nullable
     private Map<AttachmentType<?>, Object> attachments;
 
@@ -39,7 +41,10 @@ public abstract class AttachmentHolder implements IAttachmentHolder {
         T current = attachments == null ? null : (T) attachments.get(type);
         if (current == null) {
             current = type.createDefaultValue(getExposedHolder());
-            getAttachmentMap().put(type, current);
+            if (current != null) {
+                getAttachmentMap().put(type, current);
+                syncData(type);
+            }
         }
         return current;
     }
@@ -79,9 +84,10 @@ public abstract class AttachmentHolder implements IAttachmentHolder {
             return;
         }
 
+        Map<AttachmentType<?>, Object> copies = new IdentityHashMap<>();
         for (Map.Entry<AttachmentType<?>, Object> entry : attachments.entrySet()) {
             AttachmentType<?> type = entry.getKey();
-            if (!filter.test(type)) {
+            if (type.serializer == null || !filter.test(type)) {
                 continue;
             }
 
@@ -91,9 +97,47 @@ public abstract class AttachmentHolder implements IAttachmentHolder {
             }
 
             if (copy != null) {
-                to.getAttachmentMap().put(type, copy);
+                copies.put(type, copy);
             }
         }
+        // A later codec/copy-handler failure must not leave earlier values committed.
+        if (!copies.isEmpty()) to.getAttachmentMap().putAll(copies);
+    }
+
+    /** Keep unknown keys across saves so temporarily missing mods do not destroy data. */
+    @SuppressWarnings("unchecked")
+    public final net.minecraft.nbt.CompoundTag serializeAttachments(HolderLookup.Provider provider) {
+        var tag = unresolvedAttachments.copy();
+        if (attachments != null) for (var entry : attachments.entrySet()) {
+            AttachmentType<?> type = entry.getKey();
+            if (type.serializer == null) continue;
+            if (type.id() == null) throw new IllegalStateException("Unregistered serializable attachment");
+            var serializer = (IAttachmentSerializer<net.minecraft.nbt.Tag,Object>) type.serializer;
+            // Fail the save rather than silently drop a known attachment on codec failure.
+            net.minecraft.nbt.Tag encoded = serializer.write(entry.getValue(), provider);
+            if (encoded != null) tag.put(type.id(), encoded);
+            else tag.remove(type.id());
+        }
+        return tag.isEmpty() ? null : tag;
+    }
+
+    @SuppressWarnings("unchecked")
+    public final void deserializeAttachments(HolderLookup.Provider provider, net.minecraft.nbt.CompoundTag tag) {
+        var restored = new IdentityHashMap<AttachmentType<?>, Object>();
+        var unresolved = new net.minecraft.nbt.CompoundTag();
+        for (String id : tag.getAllKeys()) {
+            AttachmentType<?> type = AttachmentType.byId(id);
+            if (type == null || type.serializer == null) {
+                unresolved.put(id, Objects.requireNonNull(tag.get(id)).copy());
+            } else {
+                var serializer = (IAttachmentSerializer<net.minecraft.nbt.Tag,Object>) type.serializer;
+                Object value = serializer.read(getExposedHolder(), tag.get(id), provider);
+                restored.put(type, Objects.requireNonNull(value, "Deserialized attachment " + id));
+            }
+        }
+        // Commit only after every known attachment has decoded successfully.
+        attachments = restored;
+        unresolvedAttachments = unresolved;
     }
 
     public static class AsField extends AttachmentHolder {

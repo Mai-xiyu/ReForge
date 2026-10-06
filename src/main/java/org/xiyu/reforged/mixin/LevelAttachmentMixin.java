@@ -25,52 +25,7 @@ import java.util.function.Supplier;
  * {@code Level.getCapability(BlockCapability, ...)} default methods are available.
  */
 @Mixin(Level.class)
-public abstract class LevelAttachmentMixin implements IAttachmentHolder, ILevelExtension {
-
-    @Unique
-    private final AttachmentHolder.AsField reforged$attachmentHolder = new AttachmentHolder.AsField(this);
-
-    @Override
-    public <T> T getData(AttachmentType<T> type) {
-        return reforged$attachmentHolder.getData(type);
-    }
-
-    @Override
-    public <T> T setData(AttachmentType<T> type, T value) {
-        return reforged$attachmentHolder.setData(type, value);
-    }
-
-    @Override
-    public <T> boolean hasData(AttachmentType<T> type) {
-        return reforged$attachmentHolder.hasData(type);
-    }
-
-    @Override
-    public <T> T removeData(AttachmentType<T> type) {
-        return reforged$attachmentHolder.removeData(type);
-    }
-
-    @Override
-    public boolean hasAttachments() {
-        return reforged$attachmentHolder.hasAttachments();
-    }
-
-    @Override
-    public <T> T getData(Supplier<AttachmentType<T>> type) { return getData(type.get()); }
-    @Override
-    public <T> boolean hasData(Supplier<AttachmentType<T>> type) { return hasData(type.get()); }
-    @Override
-    public <T> T setData(Supplier<AttachmentType<T>> type, T value) { return setData(type.get(), value); }
-    @Override
-    public <T> T removeData(Supplier<AttachmentType<T>> type) { return removeData(type.get()); }
-    @Override
-    public <T> Optional<T> getExistingData(AttachmentType<T> type) {
-        return hasData(type) ? Optional.of(getData(type)) : Optional.empty();
-    }
-    @Override
-    public <T> Optional<T> getExistingData(Supplier<AttachmentType<T>> type) {
-        return getExistingData(type.get());
-    }
+public abstract class LevelAttachmentMixin implements ILevelExtension {
 
     @Nullable
     public <T, C> T getCapability(BlockCapability<T, C> cap, BlockPos pos, @Nullable C context) {

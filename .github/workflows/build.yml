@@ -1,4 +1,4 @@
-name: Build ReForged
+name: Build ReForge
 
 on:
   push:
@@ -13,6 +13,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,14 +28,68 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
-      - name: Build project
-        run: ./gradlew build --no-daemon
+      - name: Build project and release JAR
+        run: ./gradlew build verifyReleaseJar --no-daemon
+
+      - name: Verify repeat packaging produces identical bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp build/libs/reforge-*.jar.sha256 build/expected-release.sha256
+          ./gradlew releaseJar verifyReleaseJar --rerun-tasks --no-daemon
+          cmp build/expected-release.sha256 build/libs/reforge-*.jar.sha256
+
+      - name: Prepare isolated GameTest world
+        shell: bash
+        run: |
+          mkdir -p build/smoke/gametest
+          printf 'eula=true\n' > build/smoke/gametest/eula.txt
+
+      - name: Write attachment persistence sample
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew runGameTestServer --no-daemon -PreforgedRunDir=build/smoke/gametest -PpersistencePhase=write -x downloadAssets 2>&1 | tee build/smoke/gametest-write.log
+
+      - name: Verify attachments after process restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew runGameTestServer --no-daemon -PreforgedRunDir=build/smoke/gametest -PpersistencePhase=read -x downloadAssets 2>&1 | tee build/smoke/gametest-read.log
+
+      - name: Verify required constructor failure blocks startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/smoke/failure
+          cp build/smoke/gametest/eula.txt build/smoke/failure/eula.txt
+          if ./gradlew runGameTestServer --no-daemon -PreforgedRunDir=build/smoke/failure -PfixtureFailure=true -x downloadAssets 2>&1 | tee build/smoke/initialization-failure.log
+          then
+            echo 'Startup unexpectedly accepted a required constructor failure'
+            exit 1
+          fi
+          grep -F 'fixture-required-construction-failure' build/smoke/initialization-failure.log
 
       - name: Upload build outputs
         uses: actions/upload-artifact@v4
         with:
-          name: ReForged-build-${{ github.sha }}
+          name: ReForge-build-${{ github.sha }}
           path: |
-            build/libs/*.jar
+            build/libs/reforge-*.jar
+            build/libs/reforge-*.jar.sha256
           if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReForge-tests-${{ github.sha }}
+          path: |
+            build/test-results/test/
+            build/reports/tests/test/
+            build/smoke/*.log
+            build/smoke/gametest/logs/
+            build/smoke/failure/logs/
+          if-no-files-found: warn
           retention-days: 14

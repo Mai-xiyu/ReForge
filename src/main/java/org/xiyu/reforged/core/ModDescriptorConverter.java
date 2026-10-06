@@ -90,6 +90,33 @@ public final class ModDescriptorConverter {
     }
 
     /**
+     * Returns true when a NeoForge dependency block explicitly rejects ReForged.
+     * The declaration is scoped to the dependency block so an unrelated
+     * {@code type = "incompatible"} entry cannot disable the mod accidentally.
+     */
+    public static boolean declaresReForgedIncompatibility(String neoContent) {
+        Pattern blockPattern = Pattern.compile(
+                "(?ms)^\\s*\\[\\[dependencies(?:\\.\\\"[^\\\"]+\\\"|\\.[^\\]]+)\\]\\].*?(?=^\\s*\\[\\[|\\z)");
+        Matcher blocks = blockPattern.matcher(neoContent);
+        while (blocks.find()) {
+            String block = blocks.group();
+            String modId = firstTomlValue(block, "modId");
+            String type = firstTomlValue(block, "type");
+            if ("reforged".equalsIgnoreCase(modId) && "incompatible".equalsIgnoreCase(type)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String firstTomlValue(String block, String key) {
+        Pattern valuePattern = Pattern.compile("(?m)^\\s*" + Pattern.quote(key)
+                + "\\s*=\\s*[\\\"']([^\\\"']+)[\\\"']");
+        Matcher value = valuePattern.matcher(block);
+        return value.find() ? value.group(1).trim() : "";
+    }
+
+    /**
      * Build a minimal Forge descriptor that lets Forge's own mod-folder scanner
      * accept a NeoForge jar without executing it through JavaFML.
      *

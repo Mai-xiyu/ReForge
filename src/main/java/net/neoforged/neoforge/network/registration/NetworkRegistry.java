@@ -45,7 +45,14 @@ public class NetworkRegistry {
             boolean optional) {
         @SuppressWarnings("unchecked")
         StreamCodec<? super FriendlyByteBuf, T> castCodec = (StreamCodec<? super FriendlyByteBuf, T>) codec;
-        PayloadChannelRegistry.registerPayload(type, castCodec, handler, flow.orElse(null));
+        PayloadChannelRegistry.PayloadPhase phase = protocols != null
+                && protocols.contains(ConnectionProtocol.CONFIGURATION)
+                && !protocols.contains(ConnectionProtocol.PLAY)
+                ? PayloadChannelRegistry.PayloadPhase.CONFIGURATION
+                : protocols != null && protocols.contains(ConnectionProtocol.CONFIGURATION)
+                ? PayloadChannelRegistry.PayloadPhase.COMMON : PayloadChannelRegistry.PayloadPhase.PLAY;
+        PayloadChannelRegistry.registerPayload(type, castCodec, handler, flow.orElse(null), phase,
+                version, optional, HandlerThread.MAIN);
     }
 
     public static boolean hasChannel(ResourceLocation channel) {
@@ -53,6 +60,8 @@ public class NetworkRegistry {
     }
 
     public static boolean hasChannel(Connection connection, ConnectionProtocol protocol, ResourceLocation payloadId) {
-        return hasChannel(payloadId);
+        var entry = PayloadChannelRegistry.getEntry(payloadId);
+        return entry != null && entry.contract().permits(protocol, entry.flow() == null
+                ? connection.getReceiving() : entry.flow()) && entry.channel().isRemotePresent(connection);
     }
 }

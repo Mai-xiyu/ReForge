@@ -14,6 +14,7 @@ import org.objectweb.asm.commons.ClassRemapper;
 import org.slf4j.Logger;
 
 import java.util.HashMap;
+import java.util.Arrays;
 import java.util.Map;
 
 /**
@@ -37,6 +38,18 @@ import java.util.Map;
  */
 public final class BytecodeRewriter {
 
+    public enum RewriteStatus {
+        REWRITTEN,
+        UNCHANGED,
+        FAILED
+    }
+
+    public record RewriteResult(byte[] bytes, RewriteStatus status, Throwable failure) {
+        public boolean succeeded() {
+            return status != RewriteStatus.FAILED;
+        }
+    }
+
     private static final Logger LOGGER = LogUtils.getLogger();
 
     private final ReForgedRemapper remapper;
@@ -56,6 +69,15 @@ public final class BytecodeRewriter {
      * @return the transformed bytes with all NeoForge references remapped
      */
     public byte[] rewrite(byte[] originalBytes) {
+        RewriteResult result = rewriteWithStatus(originalBytes);
+        if (!result.succeeded()) {
+            throw new IllegalStateException("Required ReForged bytecode conversion failed", result.failure());
+        }
+        return result.bytes();
+    }
+
+    /** Rewrite a class and preserve whether the output is trustworthy. */
+    public RewriteResult rewriteWithStatus(byte[] originalBytes) {
         try {
             ClassReader reader = new ClassReader(originalBytes);
             // COMPUTE_MAXS preserves existing stack frames while recalculating max stack/locals.
@@ -70,14 +92,15 @@ public final class BytecodeRewriter {
             ClassVisitor visitor = new ClassRemapper(redirector, remapper);
             reader.accept(visitor, ClassReader.EXPAND_FRAMES);
 
-            LOGGER.debug("[ReForged] Rewrote class: {}", reader.getClassName());
-            return writer.toByteArray();
+            byte[] rewritten = writer.toByteArray();
+            RewriteStatus status = Arrays.equals(originalBytes, rewritten)
+                    ? RewriteStatus.UNCHANGED : RewriteStatus.REWRITTEN;
+            LOGGER.debug("[ReForged] Rewrote class: {} ({})", reader.getClassName(), status);
+            return new RewriteResult(rewritten, status, null);
 
-        } catch (Exception e) {
-            // If rewriting fails, return original bytes and log the error so the mod
-            // can still attempt to load (it will likely fail later with a clearer error).
-            LOGGER.error("[ReForged] Failed to rewrite class, returning original bytes", e);
-            return originalBytes;
+        } catch (Exception | LinkageError e) {
+            LOGGER.error("[ReForged] Failed to rewrite class", e);
+            return new RewriteResult(originalBytes, RewriteStatus.FAILED, e);
         }
     }
 
