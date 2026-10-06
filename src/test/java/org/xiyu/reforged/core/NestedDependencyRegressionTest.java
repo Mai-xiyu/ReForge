@@ -35,6 +35,16 @@ class NestedDependencyRegressionTest {
         return path;
     }
 
+    Path modJar(String name, String resource) throws Exception {
+        Path path = dir.resolve(name);
+        try (var output = new JarOutputStream(Files.newOutputStream(path))) {
+            output.putNextEntry(new JarEntry("resource.txt"));
+            output.write(resource.getBytes(StandardCharsets.UTF_8));
+            output.closeEntry();
+        }
+        return path;
+    }
+
     void inIsolatedCache(org.junit.jupiter.api.function.Executable operation) throws Throwable {
         String previous = System.getProperty("user.dir");
         System.setProperty("user.dir", dir.toString());
@@ -83,5 +93,78 @@ class NestedDependencyRegressionTest {
     @Test void corruptEmbeddedLibraryRejectsIncompleteClassLoader() throws Throwable {
         Path path = parent("broken.jar", "library.jar", new byte[]{0,1,2}, false);
         inIsolatedCache(() -> assertNull(NeoModClassLoader.createClassLoader(List.of(path), getClass().getClassLoader(), null)));
+    }
+
+    @Test void corruptedExtractionWithCompletionMarkerIsRebuilt() throws Throwable {
+        Path path = modJar("mod.jar", "original");
+        inIsolatedCache(() -> {
+            try (var loader = NeoModClassLoader.createClassLoader(List.of(path), getClass().getClassLoader(), null)) {
+                assertNotNull(loader);
+                try (var input = loader.getResourceAsStream("resource.txt")) {
+                    assertEquals("original", new String(input.readAllBytes(), StandardCharsets.UTF_8));
+                }
+            }
+            Path extractedRoot = dir.resolve(".reforged/extracted");
+            Path extracted;
+            try (var entries = Files.list(extractedRoot)) {
+                extracted = entries.filter(Files::isDirectory).findFirst().orElseThrow();
+            }
+            Files.writeString(extracted.resolve("resource.txt"), "corrupted");
+            try (var loader = NeoModClassLoader.createClassLoader(List.of(path), getClass().getClassLoader(), null)) {
+                assertNotNull(loader);
+                try (var input = loader.getResourceAsStream("resource.txt")) {
+                    assertEquals("original", new String(input.readAllBytes(), StandardCharsets.UTF_8));
+                }
+            }
+        });
+    }
+
+    @Test void missingResourceExtraFileAndInvalidReceiptAreRepaired() throws Throwable {
+        Path source = modJar("mod.jar", "original");
+        byte[] original = Files.readAllBytes(source);
+        inIsolatedCache(() -> {
+            Path cache;
+            try (var loader = NeoModClassLoader.createClassLoader(List.of(source), getClass().getClassLoader(), null)) {
+                assertNotNull(loader);
+                cache = Path.of(loader.getURLs()[0].toURI());
+            }
+            for (int damage = 0; damage < 3; damage++) {
+                if (damage == 0) Files.delete(cache.resolve("resource.txt"));
+                if (damage == 1) Files.writeString(cache.resolve("injected.txt"), "not from source");
+                if (damage == 2) Files.writeString(cache.resolve(".reforged-complete"), "incomplete");
+                try (var loader = NeoModClassLoader.createClassLoader(List.of(source), getClass().getClassLoader(), null)) {
+                    assertNotNull(loader);
+                    assertEquals(cache, Path.of(loader.getURLs()[0].toURI()));
+                    try (var input = loader.getResourceAsStream("resource.txt")) {
+                        assertEquals("original", new String(input.readAllBytes(), StandardCharsets.UTF_8));
+                    }
+                    assertNull(loader.findResource("injected.txt"));
+                    assertArrayEquals(original, Files.readAllBytes(source));
+                }
+            }
+        });
+    }
+
+    @Test void extractionFailureDoesNotFallBackToJarResourceUrls() throws Throwable {
+        Path source = modJar("mod.jar", "original");
+        inIsolatedCache(() -> {
+            Files.createDirectory(dir.resolve(".reforged"));
+            Files.writeString(dir.resolve(".reforged/extracted"), "blocked directory");
+            assertNull(NeoModClassLoader.createClassLoader(List.of(source), getClass().getClassLoader(), null));
+        });
+    }
+
+    @Test void escapingAndReservedArchiveEntriesBlockExtraction() throws Throwable {
+        inIsolatedCache(() -> {
+            for (String entry : List.of("../escaped.txt", ".reforged-complete", ".reforged-complete.tmp")) {
+                Path source = dir.resolve("invalid.jar");
+                try (var output = new JarOutputStream(Files.newOutputStream(source))) {
+                    output.putNextEntry(new JarEntry(entry));
+                    output.write("invalid".getBytes(StandardCharsets.UTF_8)); output.closeEntry();
+                }
+                assertNull(NeoModClassLoader.createClassLoader(List.of(source), getClass().getClassLoader(), null));
+                assertFalse(Files.exists(dir.resolve(".reforged/extracted/escaped.txt")));
+            }
+        });
     }
 }

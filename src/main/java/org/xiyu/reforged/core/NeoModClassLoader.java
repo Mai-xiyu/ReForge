@@ -58,15 +58,11 @@ public final class NeoModClassLoader {
                                                     List<Path> extractedJiJJars) {
         try {
             List<URL> urls = new ArrayList<>();
-            // Add top-level mod JARs as extracted directories (fall back to the
-            // jar itself if extraction fails).
+            // Directory resources are part of the loader contract; extraction
+            // failure must not silently switch mods to opaque jar: URLs.
             for (Path jar : jars) {
                 Path extracted = extractJarToCache(jar);
-                if (extracted != null) {
-                    urls.add(extracted.toUri().toURL());
-                } else {
-                    urls.add(jar.toUri().toURL());
-                }
+                urls.add(extracted.toUri().toURL());
             }
             // Extract Jar-in-Jar (JiJ) dependencies, recursively: libraries can
             // nest their own JiJ entries (e.g. ywzj_vehicle → simplebedrockmodel → mae).
@@ -111,10 +107,9 @@ public final class NeoModClassLoader {
                 };
 
                 // Specific classes that must be loaded from parent to maintain type identity
-                // with classes injected via ReForged Mixins (e.g., JadeFont interface on Font)
+                // with classes injected via ReForged Mixins.
                 private static final java.util.Set<String> PARENT_FIRST_CLASSES = java.util.Set.of(
-                    "snownee.jade.gui.JadeFont",
-                    "snownee.jade.mixin.EntityAccess"
+                    "snownee.jade.gui.JadeFont"
                 );
 
                 private boolean isParentFirst(String name) {
@@ -315,15 +310,15 @@ public final class NeoModClassLoader {
      * cache format version. A lock and completion marker make concurrent
      * loader creation safe.
      *
-     * @return the extraction root directory, or null on failure
+     * @return the verified extraction root directory
      */
     private static Path extractJarToCache(Path jar) {
         try {
             String digest = sha256(jar);
             String dirName = jar.getFileName().toString().replaceAll("[^A-Za-z0-9._-]", "_")
-                    + "-v2-" + digest;
+                    + "-v3-" + digest;
             Path cacheRoot = Path.of(System.getProperty("user.dir", "."))
-                    .resolve(".reforged").resolve("extracted");
+                    .toAbsolutePath().normalize().resolve(".reforged").resolve("extracted");
             Path target = cacheRoot.resolve(dirName);
             Path marker = target.resolve(".reforged-complete");
             Path lockPath = cacheRoot.resolve(dirName + ".lock");
@@ -333,14 +328,16 @@ public final class NeoModClassLoader {
                     java.nio.file.StandardOpenOption.CREATE,
                     java.nio.file.StandardOpenOption.WRITE);
                  FileLock ignored = channel.lock()) {
-                if (Files.isRegularFile(marker)) {
+                if (validExtraction(target, marker, digest)) {
+                    if (!digest.equals(sha256(jar))) throw new java.io.IOException("Source changed during cache validation: " + jar);
                     LOGGER.debug("[ReForged] Using cached extraction for {}", jar.getFileName());
                     return target;
                 }
 
                 // (Re-)extract: clear any partial leftovers first.
                 if (Files.exists(target)) {
-                    deleteRecursively(target);
+                    if (!target.normalize().startsWith(cacheRoot)) throw new java.io.IOException("Cache path escapes root: " + target);
+                    deleteRecursively(target, cacheRoot);
                 }
                 Files.createDirectories(target);
 
@@ -350,8 +347,9 @@ public final class NeoModClassLoader {
                     while (entries.hasMoreElements()) {
                         JarEntry entry = entries.nextElement();
                         Path out = target.resolve(entry.getName()).normalize();
-                        if (!out.startsWith(target)) {
-                            continue; // zip-slip guard
+                        if (!out.startsWith(target) || out.equals(target)
+                                || out.equals(marker) || out.equals(target.resolve(".reforged-complete.tmp"))) {
+                            throw new java.io.IOException("Invalid or reserved extraction entry: " + entry.getName());
                         }
                         if (entry.isDirectory()) {
                             Files.createDirectories(out);
@@ -365,7 +363,8 @@ public final class NeoModClassLoader {
                     }
                 }
                 Path markerTmp = target.resolve(".reforged-complete.tmp");
-                Files.writeString(markerTmp, "version=2\nsha256=" + digest + "\n");
+                if (!digest.equals(sha256(jar))) throw new java.io.IOException("Source changed during extraction: " + jar);
+                Files.writeString(markerTmp, extractionReceipt(digest, extractionTreeDigest(target)), StandardCharsets.UTF_8);
                 try {
                     Files.move(markerTmp, marker, StandardCopyOption.ATOMIC_MOVE);
                 } catch (java.nio.file.AtomicMoveNotSupportedException e) {
@@ -375,10 +374,41 @@ public final class NeoModClassLoader {
                 return target;
             }
         } catch (Exception e) {
-            LOGGER.warn("[ReForged] Extraction failed for {} — falling back to jar URL: {}",
-                    jar.getFileName(), e.getMessage());
-            return null;
+            throw new IllegalStateException("Required Mod extraction failed for " + jar, e);
         }
+    }
+
+    private static boolean validExtraction(Path target, Path marker, String sourceDigest) {
+        try {
+            if (Files.isSymbolicLink(target) || Files.isSymbolicLink(marker) || !Files.isRegularFile(marker)) return false;
+            return Files.readString(marker, StandardCharsets.UTF_8)
+                    .equals(extractionReceipt(sourceDigest, extractionTreeDigest(target)));
+        } catch (Exception invalidCache) {
+            return false;
+        }
+    }
+
+    private static String extractionReceipt(String sourceDigest, String treeDigest) {
+        return "version=3\nsource=" + sourceDigest + "\ntree=" + treeDigest + "\n";
+    }
+
+    private static String extractionTreeDigest(Path root) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        try (var paths = Files.walk(root)) {
+            for (Path path : paths.sorted().toList()) {
+                if (path.equals(root) || path.equals(root.resolve(".reforged-complete"))
+                        || path.equals(root.resolve(".reforged-complete.tmp"))) continue;
+                if (Files.isSymbolicLink(path)) throw new java.io.IOException("Symlink in extraction cache: " + path);
+                boolean directory = Files.isDirectory(path);
+                if (!directory && !Files.isRegularFile(path)) throw new java.io.IOException("Invalid cached file: " + path);
+                byte[] name = root.relativize(path).toString().replace('\\', '/').getBytes(StandardCharsets.UTF_8);
+                digest.update((byte) (directory ? 0 : 1));
+                digest.update(java.nio.ByteBuffer.allocate(Integer.BYTES).putInt(name.length).array());
+                digest.update(name);
+                if (!directory) digest.update(java.util.HexFormat.of().parseHex(sha256(path)));
+            }
+        }
+        return toHex(digest.digest());
     }
 
     private static String sha256(Path path) throws Exception {
@@ -405,15 +435,18 @@ public final class NeoModClassLoader {
         return result.toString();
     }
 
-    private static void deleteRecursively(Path root) {
+    private static void deleteRecursively(Path root, Path cacheRoot) throws java.io.IOException {
+        if (Files.isSymbolicLink(root)) {
+            Files.delete(root);
+            return;
+        }
+        Path resolvedRoot = root.toRealPath();
+        Path resolvedCache = cacheRoot.toRealPath();
+        if (resolvedRoot.equals(resolvedCache) || !resolvedRoot.startsWith(resolvedCache)) {
+            throw new java.io.IOException("Refusing to clear cache outside its root: " + resolvedRoot);
+        }
         try (var walk = Files.walk(root)) {
-            walk.sorted(java.util.Comparator.reverseOrder()).forEach(p -> {
-                try {
-                    Files.deleteIfExists(p);
-                } catch (Exception ignored) {
-                }
-            });
-        } catch (Exception ignored) {
+            for (Path path : walk.sorted(java.util.Comparator.reverseOrder()).toList()) Files.deleteIfExists(path);
         }
     }
 }

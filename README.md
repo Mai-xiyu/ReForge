@@ -1,5 +1,7 @@
 # ReForge
 
+<p align="center"><img src="src/main/resources/logo.png" alt="ReForge logo" width="240"></p>
+
 [中文](README_CN.md) | English
 
 An experimental compatibility layer for running NeoForge mods on Minecraft Forge, covering loading, bytecode conversion, API shims, events, and resources.

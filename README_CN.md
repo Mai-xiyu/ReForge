@@ -1,5 +1,7 @@
 # ReForge
 
+<p align="center"><img src="src/main/resources/logo.png" alt="ReForge Logo" width="240"></p>
+
 中文 | [English](README.md)
 
 尝试在 Minecraft Forge 上运行 NeoForge 模组的实验性兼容层，包含加载、字节码转换、API 桥接、事件与资源适配。
