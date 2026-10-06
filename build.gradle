@@ -66,6 +66,7 @@ minecraft {
             property 'forge.enabledGameTestNamespaces', mod_id
             property 'mixin.env.remapRefMap', 'true'
             property 'reforged.clientSmoke', providers.gradleProperty('clientSmoke').getOrElse('false')
+            property 'reforged.jadeSmoke', providers.gradleProperty('jadeSmoke').getOrElse('false')
             property 'reforged.fixtureClientFailure', providers.gradleProperty('fixtureClientFailure').getOrElse('false')
         }
 
@@ -220,6 +221,7 @@ tasks.register('patchNeoForgeMods', JavaExec) {
 }
 
 tasks.register('copyReForgedDevMod', Copy) {
+    doNotTrackState('The destination also contains user-installed mods')
     group = 'reforged'
     description = 'Copies the current ReForged jar into run/mods so Forge userdev discovers it consistently.'
     dependsOn tasks.named('releaseJar')
@@ -237,6 +239,7 @@ tasks.register('gameTestJar', Jar) {
 }
 
 tasks.register('copyReForgedGameTestMod', Copy) {
+    doNotTrackState('The destination also contains user-installed mods')
     dependsOn tasks.named('gameTestBootstrapJar')
     from tasks.named('gameTestBootstrapJar').flatMap { it.archiveFile }
     into reforgedRunDir.dir('mods')
@@ -277,6 +280,7 @@ tasks.register('compatibilityFixtureJar', Jar) {
     }
 }
 tasks.register('copyCompatibilityFixture', Copy) {
+    doNotTrackState('The destination also contains user-installed mods')
     dependsOn tasks.named('compatibilityFixtureJar')
     from tasks.named('compatibilityFixtureJar').flatMap { it.archiveFile }
     into reforgedRunDir.dir('mods')

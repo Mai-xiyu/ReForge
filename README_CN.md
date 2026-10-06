@@ -16,6 +16,8 @@
 
 安装包内嵌运行时与 MixinExtras。`build/intermediates/jars/` 中的其他 JAR 是构建中间产物或测试夹具，不需要安装。
 
+本地已验证最小模组夹具、专服附件重启持久化及 Jade 15.1.6+neoforge 标题界面初始化。范围与证据见[测试记录](docs/STABILIZATION.md)。
+
 启动保留原始 NeoForge JAR，在 `.reforged/discovery/` 生成发现副本。手动 `patchNeoForgeMods` 会替换输入并保留 `.neoforge-original` 备份。模组作者声明与内部 Mod ID `reforged` 不兼容时，该模组会退出桥接加载。
 
 已知限制：

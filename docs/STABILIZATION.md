@@ -47,7 +47,7 @@ CI 已配置编译、JUnit、发布结构校验、强制重打包摘要比较，
 
 `src/compatibilityTest/` 提供最小 NeoForge 模组及其内嵌依赖，走原始 JAR → 缓存占位包 → Forge 发现 → JiJ 提取 → 依赖排序 → 构造 → common setup 回调的完整链路，GameTest 断言两者实际初始化及事件回调。该夹具不进入发布包。`-PfixtureFailure=true` 在注册监听器后主动抛出构造异常，CI 要求启动失败且日志包含该明确原因。
 
-本地 Windows 客户端也执行了最小夹具，自动断言到达 `TitleScreen`、两模组初始化及 common setup 回调完成后正常退出。该测试没有进入世界，也没有加载 Jade；本次加了 `--offline -x downloadAssets`，日志存在原版贴图/语言资源缺失警告，不能作为画面正确性验证。基础命令为 `./gradlew runClient -PreforgedRunDir=build/smoke/client -PclientSmoke=true`，结果写入运行目录的 `client-smoke-result.txt`。
+本地 Windows 客户端也执行了最小夹具，自动断言到达 `TitleScreen`、两模组初始化及 common setup 回调完成后正常退出。最小夹具测试没有进入世界；Jade 单独测试见下文；本次加了 `--offline -x downloadAssets`，日志存在原版贴图/语言资源缺失警告，不能作为画面正确性验证。基础命令为 `./gradlew runClient -PreforgedRunDir=build/smoke/client -PclientSmoke=true`，结果写入运行目录的 `client-smoke-result.txt`。
 
 复现命令（PowerShell；已有可用依赖时可追加 `--offline`）：
 
@@ -67,11 +67,12 @@ CI 已配置编译、JUnit、发布结构校验、强制重打包摘要比较，
 | 新建专服世界写入 | 7 个 required GameTest 通过 | `build/smoke/reforge-write.log` |
 | 退出后新进程读取同一世界 | 7 个 required GameTest 通过，维度/实体/方块实体/区块附件保留 | `build/smoke/reforge-read.log` |
 | 必要构造器主动失败 | 启动被阻断，明确报告 `fixture-required-construction-failure` | `build/smoke/reforge-construction-failure.log` |
+| Jade 15.1.6 客户端 | 原生 Mixin、插件初始化、标题界面及 JadeFont 接口身份/调用通过；未验收世界内玩法 | `build/smoke/jade-verified.log`、`build/smoke/jade-verified/client-smoke-result.txt` |
 | 客户端最小夹具 | 标题界面、构造、common setup 与 GUI 注册回调断言通过，自动退出 | `build/smoke/reforge-client.log`、`build/smoke/reforge-client/client-smoke-result.txt` |
 | 制品与重复打包 | 结构门禁通过；同源码强制重打包 SHA-256 一致 | `build/reforge-reproducibility.log`、`build/libs/reforge-1.0.0.jar.sha256` |
 | 文档/工作流 | `git diff --check` 通过，工作流路径已同步；远端 CI 结果单独确认 | 本地命令结果 |
 
-当前安装包 SHA-256：`4556bd1664e7a82fab55bdf8ab51dc04b07b12cced499555d9d1b6021495d50c`。这是当前工具链同源码重打包的结果，尚未证明跨操作系统或独立干净构建环境的字节一致性。客户端/专服均通过 ForgeGradle userdev 启动并使用启动包定位流程，独立 Forge 安装器环境仍需另验。
+当前安装包 SHA-256：`e9fdbea98a364def65e99a9ffc9946052f7b3caa554c8d91ddcab7ce9fe8a444`。这是当前工具链同源码重打包的结果，尚未证明跨操作系统或独立干净构建环境的字节一致性。客户端/专服均通过 ForgeGradle userdev 启动并使用启动包定位流程，独立 Forge 安装器环境仍需另验。
 
 ## Issue 修复
 
@@ -79,7 +80,7 @@ CI 已配置编译、JUnit、发布结构校验、强制重打包摘要比较，
 
 | Issue | 处理 | 尚需验收 |
 | --- | --- | --- |
-| #5 Jade 类加载器可见性 | 事件代理使用桥接类加载器，指定共享接口 parent-first | 准确 Jade 版本的客户端实例；检查 tooltip、实体访问及注册/注销 |
+| #5 Jade 类加载器可见性 | 事件代理使用桥接类加载器，指定共享接口 parent-first；移除强行注入缺失接口及字体空实现的旧补丁，使用 Jade 自带 Mixin | Jade 15.1.6+neoforge 已通过初始化与字体接口身份冒烟；继续世界内 tooltip、实体访问及注册/注销 |
 | #7 许可证 | LGPL-2.1-only 元数据，发布包包含 LICENSE | 发布时核对源码与制品对应关系 |
 | #8 作者主动排除 | 恢复原件、跳过补丁及桥接加载，已有回归 | 新增作者声明格式时补充 fixture |
 | #9 Forge 1.20.1 | 维持此前拒绝与当前版本边界 | 无实现计划，不扩大当前承诺 |
@@ -110,3 +111,21 @@ PR #6 中的 Shadow 打包不能替代运行时字节码转换；当前采用启
 - 负向客户端实际进入 Forge 加载错误状态，日志包含 `Required GUI layer registration failed` 与 `fixture-required-client-registration-failure`，未产生标题界面成功记录。测试关闭该错误窗口后，Gradle 冒烟门禁失败；不能据此声称客户端会自动退出。证据：`build/smoke/reforge-client-failure.log`。
 - 附件复制先收集所有结果，再写入目标容器；后续复制处理器失败不提交前面的值。此保证限于容器写入，不回滚自定义处理器自行产生的副作用；并发访问仍遵循游戏线程约束。额外暂存空间为 O(k)，k 为选中的附件数。
 - 中英文 README 重写，明确 vibecoding 开发方式；发布目录只保留 `reforge-1.0.0.jar` 与摘要。源码历史、许可证、内部 ID 和作者排除契约保留。
+
+## Jade 客户端实测
+
+使用 [Modrinth 固定版本 eNY0Rg8n](https://modrinth.com/mod/jade/version/eNY0Rg8n) 的 `Jade-1.21-NeoForge-15.1.6.jar`。API 标注支持 1.21，下载已校验 API 提供的 SHA-512；没有把本次输入 JAR 加入仓库或安装包。
+
+实际复现了旧 `JadeEntityAccessMixin` 对 `Entity` 注入不存在的 `snownee.jade.mixin.EntityAccess`，导致 Mixin 的 `IllegalClassLoadError`。该 Jade 版本不包含这个类。现已删除该补丁及字体空实现，保留提取的 Jade 原生 Mixin；客户端到达标题界面、插件初始化和 payload 注册完成。
+
+`-PjadeSmoke=true` 额外断言 NeoMod 类加载器中的 `JadeFont` 与原版 Font 对象身份兼容，并调用两项 glint 接口方法。该测试证明初始化与接口调用，不证明世界内 tooltip、视觉 glint 效果或真实联机。原版资源仍有缺失警告。
+
+测试运行目录为 `build/smoke/jade-verified/`，日志与结果为 `build/smoke/jade-verified.log`、`build/smoke/jade-verified/client-smoke-result.txt`。将上述固定版本 JAR 放入该目录的 `mods/` 后运行：
+
+```powershell
+.\gradlew.bat runClient --no-daemon -PreforgedRunDir=build/smoke/jade-verified -PclientSmoke=true -PjadeSmoke=true
+```
+
+开发 Copy 任务已关闭目录状态跟踪，避免 Gradle 在首次使用新的 build 子目录时把用户预装 Mod 当成过期输出清理。新建测试目录中预先放入 Jade，再执行任务，已验证原 JAR 保留并实际加载；Jade 检查开关也能防止只运行最小夹具时误报成功。
+
+远端 Linux CI：提交 `8a6d4452` 的[构建 37445460120](https://github.com/Mai-xiyu/ReForge/actions/runs/37445460120) 已通过编译、JUnit、制品校验、重复打包与专服写入/重启读取和构造失败门禁。该运行不包含后续 Jade 补丁移除；后续提交由新的 CI 运行单独验收。

@@ -16,6 +16,8 @@ Current baseline: **Minecraft 1.21 / Forge 51.0.33 / Java 21**. Forge 1.20.1 is 
 
 The single installation JAR embeds its runtime and MixinExtras. Other JARs in `build/intermediates/jars/` are build inputs or test fixtures and should not be installed.
 
+Local checks cover minimal mod fixtures, attachment persistence across server restarts, and Jade 15.1.6+neoforge title-screen initialization. See the [test record](docs/STABILIZATION.md) for scope and evidence.
+
 Startup preserves original NeoForge JARs and generates discovery copies in `.reforged/discovery/`. Manual `patchNeoForgeMods` replaces inputs and retains `.neoforge-original` backups. An author's incompatible dependency on the internal Mod ID `reforged` excludes that mod from bridge loading.
 
 Known limits:
