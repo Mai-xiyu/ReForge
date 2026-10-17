@@ -102,6 +102,8 @@ PR #6 中的 Shadow 打包不能替代运行时字节码转换；当前采用启
 | 7 | 逐成员二进制验证与转换规则清单 | 解析 class/field/method 描述符，区分 PASS/FAIL/UNKNOWN；规则记录版本、结构、命中数、前后置条件及必要性 |
 | 8 | 长期运行与性能基线 | 固定负载记录启动/转换时间、tick/帧时间分布、堆保留量、监听器/队列数量；确认增长有界，再针对热点优化 |
 
+Issue 跟踪：[#1 网络契约 fixture](https://github.com/Mai-xiyu/ReForge/issues/1)、[#2 附件生命周期](https://github.com/Mai-xiyu/ReForge/issues/2)、[#3 Jade 世界内回归](https://github.com/Mai-xiyu/ReForge/issues/3)、[#4 JiJ 版本范围交集](https://github.com/Mai-xiyu/ReForge/issues/4)、[#5 附件网络同步](https://github.com/Mai-xiyu/ReForge/issues/5)。已修复并关闭：[#6 附件编解码失败静默丢失](https://github.com/Mai-xiyu/ReForge/issues/6)，对应提交 `35e7957c`。
+
 已实现复制与持久化不等于所有第三方附件格式兼容。已通过专服测试不等于大型整合包、真实联机或长期服务器稳定；当前发布版本号仍为 1.0.0，应以制品摘要区分历史包与本地构建。
 
 ## 本轮追加实现
