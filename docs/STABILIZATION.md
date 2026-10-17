@@ -111,7 +111,8 @@ PR #6 中的 Shadow 打包不能替代运行时字节码转换；当前采用启
 - Forge GameData 与客户端 GUI、菜单、命名渲染类型、缓冲区、物品装饰和维度过渡注册失败显式向上传播。最小客户端夹具新增 GUI 回调正向断言与 `-PfixtureClientFailure=true` 负向注入。
 - 负向客户端实际进入 Forge 加载错误状态，日志包含 `Required GUI layer registration failed` 与 `fixture-required-client-registration-failure`，未产生标题界面成功记录。测试关闭该错误窗口后，Gradle 冒烟门禁失败；不能据此声称客户端会自动退出。证据：`build/smoke/reforge-client-failure.log`。
 - 附件复制先收集所有结果，再写入目标容器；后续复制处理器失败不提交前面的值。此保证限于容器写入，不回滚自定义处理器自行产生的副作用；并发访问仍遵循游戏线程约束。额外暂存空间为 O(k)，k 为选中的附件数。
-- 中英文 README 重写，明确 vibecoding 开发方式；发布目录只保留 `reforge-1.0.0.jar` 与摘要。源码历史、许可证、内部 ID 和作者排除契约保留。
+- 中英文 README 重写，明确 vibecoding 开发方式；发布目录只保留 `reforge-1.0.0.jar` 与摘要。
+- 运行时附件 shim 与 NeoForge 门面对齐：默认值创建触发同步回调；未知 NBT 键在缺少 Mod 时保留；序列化和反序列化失败向上传播，反序列化在全部键成功后提交；复制先暂存全部结果，复制处理器失败不会部分写入；`copyOnDeath`、复制处理器和自动同步拒绝契约均有 JUnit 覆盖。源码历史、许可证、内部 ID 和作者排除契约保留。
 
 ## Jade 客户端实测
 
