@@ -25,12 +25,17 @@ public final class AttachmentType<T> {
     private final boolean serialize;
     @Nullable
     private final Codec<T> codec;
+    private final boolean copyOnDeath;
+    @Nullable
+    private final IAttachmentCopyHandler<T> copyHandler;
 
     private AttachmentType(Builder<T> builder) {
         this.id = builder.id != null ? builder.id : "unknown";
         this.defaultValueFactory = builder.defaultValueFactory;
         this.serialize = builder.serialize;
         this.codec = builder.codec;
+        this.copyOnDeath = builder.copyOnDeath;
+        this.copyHandler = builder.copyHandler;
     }
 
     public String id() {
@@ -47,6 +52,15 @@ public final class AttachmentType<T> {
 
     public boolean shouldSerialize() {
         return serialize && codec != null;
+    }
+
+    public boolean copyOnDeath() {
+        return copyOnDeath;
+    }
+
+    @Nullable
+    public IAttachmentCopyHandler<T> copyHandler() {
+        return copyHandler;
     }
 
     /**
@@ -100,6 +114,9 @@ public final class AttachmentType<T> {
         private boolean serialize = false;
         @Nullable
         private Codec<T> codec;
+        private boolean copyOnDeath;
+        @Nullable
+        private IAttachmentCopyHandler<T> copyHandler;
 
         Builder(Function<IAttachmentHolder, T> defaultValueFactory) {
             this.defaultValueFactory = defaultValueFactory;
@@ -122,37 +139,52 @@ public final class AttachmentType<T> {
          */
         @SuppressWarnings("unchecked")
         public Builder<T> serialize(Object codec, Object copyHandler) {
-            if (codec instanceof Codec<?> c) {
-                this.codec = (Codec<T>) c;
+            serialize(codec);
+            if (copyHandler != null) {
+                copyHandler(copyHandler);
             }
-            this.serialize = true;
             return this;
         }
 
         /**
-         * Copy on death flag.
+         * Mark this serializable attachment for player death-copy handling.
          */
         public Builder<T> copyOnDeath() {
+            requireSerializer();
+            this.copyOnDeath = true;
             return this;
         }
 
         /**
-         * Copy handler.
+         * Set a custom copy handler. The handler is called only after the source
+         * value has been selected for copying by the holder.
          */
+        @SuppressWarnings("unchecked")
         public Builder<T> copyHandler(Object handler) {
+            requireSerializer();
+            if (!(handler instanceof IAttachmentCopyHandler<?> copy)) {
+                throw new IllegalArgumentException("Unsupported attachment copy handler " + handler);
+            }
+            this.copyHandler = (IAttachmentCopyHandler<T>) copy;
             return this;
         }
 
         /**
-         * Synchronization handler; networking is bridged elsewhere, so the builder
-         * accepts the NeoForge call shape without changing local storage.
+         * Automatic network synchronization is intentionally unsupported until
+         * both endpoints and lifecycle filtering are implemented.
          */
         public Builder<T> sync(Object syncHandler) {
-            return this;
+            throw new UnsupportedOperationException("Automatic attachment synchronization is not supported by ReForged");
         }
 
         public Builder<T> sync(BiPredicate<IAttachmentHolder, ServerPlayer> sendToPlayer, Object streamCodec) {
-            return this;
+            throw new UnsupportedOperationException("Automatic attachment synchronization is not supported by ReForged");
+        }
+
+        private void requireSerializer() {
+            if (!serialize || codec == null) {
+                throw new IllegalStateException("Attachment copy requires serialization");
+            }
         }
 
         /**

@@ -9,6 +9,7 @@ import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Predicate;
 
 /**
  * AttachmentHolder — Actual storage implementation for NeoForge's Data Attachment system.
@@ -30,6 +31,8 @@ public class AttachmentHolder implements IAttachmentHolder {
 
     /** The actual attachment data storage, lazily initialized. */
     private Map<AttachmentType<?>, Object> attachments = null;
+    /** Unknown serialized keys are retained so temporarily missing mods do not lose data. */
+    private CompoundTag unresolvedAttachments = new CompoundTag();
 
     /**
      * Creates the attachment map if it does not yet exist.
@@ -69,6 +72,7 @@ public class AttachmentHolder implements IAttachmentHolder {
             ret = type.createDefaultValue(getExposedHolder());
             if (ret != null) {
                 attachments.put(type, ret);
+                syncData(type);
             }
         }
         return ret;
@@ -112,55 +116,100 @@ public class AttachmentHolder implements IAttachmentHolder {
     /**
      * Serializes all serializable attachments to NBT.
      * Uses each AttachmentType's Codec to encode values.
+     *
+     * <p>Encoding failures are propagated. Silently dropping a known attachment
+     * would make a successful save destructive and impossible to diagnose.</p>
      */
     @SuppressWarnings("unchecked")
     public CompoundTag serializeAttachments(HolderLookup.Provider provider) {
+        CompoundTag tag = unresolvedAttachments.copy();
         if (attachments == null || attachments.isEmpty()) {
-            return null;
+            return tag.isEmpty() ? null : tag;
         }
-        CompoundTag tag = new CompoundTag();
         for (var entry : attachments.entrySet()) {
             AttachmentType<?> type = entry.getKey();
-            if (type.shouldSerialize() && type.id() != null && type.codec() != null) {
-                try {
-                    com.mojang.serialization.Codec<Object> codec = (com.mojang.serialization.Codec<Object>) type.codec();
-                    var ops = provider.createSerializationContext(net.minecraft.nbt.NbtOps.INSTANCE);
-                    var result = codec.encodeStart(ops, entry.getValue());
-                    result.resultOrPartial(err ->
-                            LOGGER.warn("[ReForged] Failed to serialize attachment '{}': {}", type.id(), err)
-                    ).ifPresent(nbt -> tag.put(type.id(), nbt));
-                } catch (Exception e) {
-                    LOGGER.warn("[ReForged] Error serializing attachment '{}': {}", type.id(), e.getMessage());
-                }
+            if (!type.shouldSerialize() || type.id() == null || type.codec() == null) {
+                continue;
+            }
+            try {
+                com.mojang.serialization.Codec<Object> codec = (com.mojang.serialization.Codec<Object>) type.codec();
+                var ops = provider.createSerializationContext(net.minecraft.nbt.NbtOps.INSTANCE);
+                var encoded = codec.encodeStart(ops, entry.getValue()).getOrThrow();
+                tag.put(type.id(), encoded);
+            } catch (RuntimeException failure) {
+                throw new IllegalStateException("Failed to serialize attachment '" + type.id() + "'", failure);
             }
         }
         return tag.isEmpty() ? null : tag;
     }
 
     /**
-     * Deserializes attachments from NBT.
-     * Requires an attachment type registry to resolve types by ID. Currently limited
-     * to types that have been registered via the DeferredRegister system.
+     * Restores attachments transactionally. Unknown keys remain attached to the
+     * holder and are emitted again on the next save.
      */
+    @SuppressWarnings("unchecked")
     public void deserializeAttachments(HolderLookup.Provider provider, CompoundTag tag) {
-        if (tag == null || tag.isEmpty()) return;
-        LOGGER.debug("[ReForged] deserializeAttachments called with {} keys", tag.getAllKeys().size());
-        // Look up registered attachment types (they should be registered via NeoForge's DeferredRegister)
+        if (tag == null || tag.isEmpty()) {
+            return;
+        }
+        Map<AttachmentType<?>, Object> restored = new IdentityHashMap<>();
+        CompoundTag unresolved = new CompoundTag();
         for (String key : tag.getAllKeys()) {
             AttachmentType<?> type = AttachmentTypeRegistry.getById(key);
-            if (type != null && type.codec() != null) {
-                try {
-                    var ops = provider.createSerializationContext(net.minecraft.nbt.NbtOps.INSTANCE);
-                    var result = type.codec().parse(ops, tag.get(key));
-                    result.resultOrPartial(err ->
-                            LOGGER.warn("[ReForged] Failed to deserialize attachment '{}': {}", key, err)
-                    ).ifPresent(value -> getAttachmentMap().put(type, value));
-                } catch (Exception e) {
-                    LOGGER.warn("[ReForged] Error deserializing attachment '{}': {}", key, e.getMessage());
+            if (type == null || !type.shouldSerialize() || type.codec() == null) {
+                var unknown = tag.get(key);
+                if (unknown != null) {
+                    unresolved.put(key, unknown.copy());
                 }
-            } else {
-                LOGGER.debug("[ReForged] Skipping deserialization for unknown attachment '{}'", key);
+                continue;
             }
+            try {
+                var ops = provider.createSerializationContext(net.minecraft.nbt.NbtOps.INSTANCE);
+                var codec = (com.mojang.serialization.Codec<Object>) type.codec();
+                Object value = codec.parse(ops, tag.get(key)).getOrThrow();
+                restored.put(type, Objects.requireNonNull(value, "Deserialized attachment " + key));
+            } catch (RuntimeException failure) {
+                throw new IllegalStateException("Failed to deserialize attachment '" + key + "'", failure);
+            }
+        }
+        attachments = restored.isEmpty() ? null : restored;
+        unresolvedAttachments = unresolved;
+    }
+
+    /**
+     * Copies selected serializable values into another holder without partially
+     * committing results when a later copy handler fails.
+     */
+    @SuppressWarnings("unchecked")
+    public void copyAttachmentsTo(HolderLookup.Provider provider, AttachmentHolder target,
+                                  Predicate<AttachmentType<?>> filter) {
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(filter, "filter");
+        if (attachments == null || attachments.isEmpty()) {
+            return;
+        }
+        Map<AttachmentType<?>, Object> copies = new IdentityHashMap<>();
+        for (var entry : attachments.entrySet()) {
+            AttachmentType<?> type = entry.getKey();
+            if (!type.shouldSerialize() || !filter.test(type)) {
+                continue;
+            }
+            Object copy = entry.getValue();
+            var handler = (IAttachmentCopyHandler<Object>) type.copyHandler();
+            if (handler != null) {
+                copy = handler.copy(copy, target.getExposedHolder(), provider);
+            } else {
+                var codec = (com.mojang.serialization.Codec<Object>) type.codec();
+                var ops = provider.createSerializationContext(net.minecraft.nbt.NbtOps.INSTANCE);
+                var encoded = codec.encodeStart(ops, copy).getOrThrow();
+                copy = codec.parse(ops, encoded.copy()).getOrThrow();
+            }
+            if (copy != null) {
+                copies.put(type, copy);
+            }
+        }
+        if (!copies.isEmpty()) {
+            target.getAttachmentMap().putAll(copies);
         }
     }
 
