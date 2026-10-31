@@ -125,6 +125,7 @@ Issue 跟踪：[#1 网络契约 fixture](https://github.com/Mai-xiyu/ReForge/iss
 - 运行时附件 shim 与 NeoForge 门面对齐：默认值创建触发同步回调；未知 NBT 键在缺少 Mod 时保留；序列化和反序列化失败向上传播，反序列化在全部键成功后提交；复制先暂存全部结果，复制处理器失败不会部分写入；`copyOnDeath`、复制处理器和自动同步拒绝契约均有 JUnit 覆盖。源码历史、许可证、内部 ID 和作者排除契约保留。
 - GameTest 从 7 项扩展到 9 项：新增死亡复制筛选和普通实体转换复制。运行时发现 `EntityInjectedInterfaceMixin` 未注册，已加入 `reforged.mixins.json`；修复后写入与读取阶段均为 9/9 required tests 通过。证据目录：`build/smoke/gametest-lifecycle-2/`。这仍不等于真实玩家死亡、跨维度和长期运行已完成验收。
 - JiJ 选择现在读取 `META-INF/jarjar/metadata.json` 的坐标、版本和范围；同坐标候选先计算所有范围的交集，再选最高满足版本，版本相同按拥有者路径和条目名稳定排序。无版本元数据的不同内容继续拒绝，避免把文件名或扫描顺序当成版本选择依据。新增 2 个回归测试覆盖输入顺序和空交集。
+- 兼容性夹具现在包含通用、客户端专用和服务端专用三个 NeoForge Mod。加载器在实例化前依据依赖声明的 `side` 过滤 Mod：专服只构造通用与服务端 Mod，客户端只构造通用与客户端 Mod。专服 9/9 GameTest 与客户端 smoke 均通过；此验证覆盖 ReForge 自身 side 过滤入口，不代表所有第三方 Mod 的 side 元数据都已兼容。
 
 ## Jade 客户端实测
 

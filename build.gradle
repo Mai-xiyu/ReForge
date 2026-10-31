@@ -279,7 +279,10 @@ tasks.register('embeddedFixtureJar', Jar) {
 tasks.register('compatibilityFixtureJar', Jar) {
     dependsOn tasks.named('embeddedFixtureJar')
     archiveClassifier = 'fixture'
-    from(sourceSets.compatibilityTest.output) { include 'fixture/MinimalNeoMod.class', 'fixture/ClientSmoke*.class' }
+    from(sourceSets.compatibilityTest.output) {
+        include 'fixture/MinimalNeoMod.class', 'fixture/ClientSmoke*.class',
+                'fixture/ClientOnlyNeoMod.class', 'fixture/ServerOnlyNeoMod.class'
+    }
     from 'src/compatibilityTest/resources/parent'
     from(tasks.named('embeddedFixtureJar').flatMap { it.archiveFile }) {
         into 'META-INF/jarjar'

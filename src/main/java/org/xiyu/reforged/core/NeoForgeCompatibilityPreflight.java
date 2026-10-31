@@ -160,6 +160,29 @@ public final class NeoForgeCompatibilityPreflight {
         String declared = dep.getOrElse("side", "BOTH");
         return side.isBlank() || declared.equalsIgnoreCase("BOTH") || declared.equalsIgnoreCase(side);
     }
+
+    /**
+     * Returns whether a NeoForge mod declaration is intended for the current
+     * physical side. NeoForge expresses side-only mods through dependency
+     * declarations (usually the forge dependency), so this check is performed
+     * before the compatibility loader loads or initializes the mod class.
+     */
+    public static boolean appliesToCurrentSide(Path jar, String modId) {
+        try {
+            Metadata metadata = read(jar);
+            List<UnmodifiableConfig> dependencies = metadata.dependencies().getOrDefault(modId, List.of());
+            Set<String> declaredSides = new HashSet<>();
+            for (UnmodifiableConfig dependency : dependencies) {
+                String side = dependency.getOrElse("side", "BOTH");
+                if (!side.equalsIgnoreCase("BOTH")) declaredSides.add(side.toUpperCase(Locale.ROOT));
+            }
+            if (declaredSides.isEmpty()) return true;
+            String current = net.minecraftforge.fml.loading.FMLEnvironment.dist.isClient() ? "CLIENT" : "SERVER";
+            return declaredSides.contains(current);
+        } catch (IOException | RuntimeException failure) {
+            throw new IllegalStateException("Cannot determine side for NeoForge mod " + modId + " in " + jar, failure);
+        }
+    }
     private static boolean matchesVersion(String range, String current) throws Exception {
         if (range.isBlank() || range.equals("*")) return true;
         VersionRange parsed = VersionRange.createFromVersionSpec(range);

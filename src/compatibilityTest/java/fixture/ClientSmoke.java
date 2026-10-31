@@ -26,7 +26,9 @@ public final class ClientSmoke {
         if (!Boolean.getBoolean("reforged.clientSmoke") || completed || event.phase!=TickEvent.Phase.END) return;
         var client=Minecraft.getInstance();
         if (!(client.screen instanceof TitleScreen)) return;
-        if (!MinimalNeoMod.initialized || !MinimalNeoMod.setupReceived || !RegistrationFailure.received) {
+        if (!MinimalNeoMod.initialized || !MinimalNeoMod.setupReceived
+                || !ClientOnlyNeoMod.initialized || !ClientOnlyNeoMod.setupReceived
+                || ServerOnlyNeoMod.initialized || !RegistrationFailure.received) {
             throw new IllegalStateException("NeoForge fixture did not complete client initialization");
         }
         boolean jadeChecked = Boolean.getBoolean("reforged.jadeSmoke");
@@ -44,7 +46,7 @@ public final class ClientSmoke {
             }
         }
         try {
-            Files.writeString(Path.of("client-smoke-result.txt"),"screen=TitleScreen\nfixtureInitialized=true\ncommonSetup=true\nguiRegistration=true\njadeFont=" + jadeChecked + "\n");
+            Files.writeString(Path.of("client-smoke-result.txt"),"screen=TitleScreen\nfixtureInitialized=true\ncommonSetup=true\nclientOnlyInitialized=true\nclientOnlySetup=true\nserverOnlyInitialized=false\nguiRegistration=true\njadeFont=" + jadeChecked + "\n");
         } catch (java.io.IOException failure) { throw new IllegalStateException("Cannot record client smoke result",failure); }
         completed=true;
         client.stop();

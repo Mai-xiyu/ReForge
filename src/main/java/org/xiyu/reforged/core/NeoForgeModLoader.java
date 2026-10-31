@@ -316,6 +316,10 @@ public final class NeoForgeModLoader {
                 jarPath.getFileName());
 
         for (NeoModScanner.ModInfo info : modClasses) {
+            if (!NeoForgeCompatibilityPreflight.appliesToCurrentSide(jarPath, info.modId())) {
+                LOGGER.info("[ReForged] Skipping NeoForge mod '{}' on the current physical side", info.modId());
+                continue;
+            }
             LOGGER.info("[ReForged] Loading NeoForge mod: '{}' (class: {})", info.modId(), info.className());
             try {
                 Class<?> modClass = classLoader.loadClass(info.className());

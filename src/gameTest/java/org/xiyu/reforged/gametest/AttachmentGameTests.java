@@ -169,6 +169,10 @@ public final class AttachmentGameTests {
         helper.assertTrue(mod.getField("setupReceived").getBoolean(null),"NeoForge common setup listener was not called");
         helper.assertTrue(loader.loadClass("fixture.EmbeddedNeoMod").getField("initialized").getBoolean(null),
                 "Embedded NeoForge dependency was not constructed");
+        helper.assertTrue(loader.loadClass("fixture.ServerOnlyNeoMod").getField("initialized").getBoolean(null),
+                "Server-only NeoForge mod was not constructed on the dedicated server");
+        helper.assertTrue(!loader.loadClass("fixture.ClientOnlyNeoMod").getField("initialized").getBoolean(null),
+                "Client-only NeoForge mod was constructed on the dedicated server");
         helper.succeed();
     }
 }
