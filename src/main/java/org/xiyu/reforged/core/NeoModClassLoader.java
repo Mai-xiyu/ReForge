@@ -1,6 +1,8 @@
 package org.xiyu.reforged.core;
 
 import com.mojang.logging.LogUtils;
+import org.apache.maven.artifact.versioning.DefaultArtifactVersion;
+import org.apache.maven.artifact.versioning.VersionRange;
 import org.xiyu.reforged.asm.BytecodeRewriter;
 import org.slf4j.Logger;
 
@@ -20,6 +22,9 @@ import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.Comparator;
 import java.security.MessageDigest;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
@@ -68,9 +73,10 @@ public final class NeoModClassLoader {
             // nest their own JiJ entries (e.g. ywzj_vehicle → simplebedrockmodel → mae).
             Path jijTemp = Files.createTempDirectory("reforged-jij-");
             jijTemp.toFile().deleteOnExit();
+            Map<String, JiJCandidate> selectedJiJ = selectJiJCandidates(jars);
             java.util.Map<String, String> nestedIdentities = new java.util.HashMap<>();
             for (Path jar : jars) {
-                extractJiJRecursively(jar, jijTemp, urls, extractedJiJJars, nestedIdentities, 0);
+                extractJiJRecursively(jar, jijTemp, urls, extractedJiJJars, nestedIdentities, selectedJiJ, 0);
             }
 
             // Classes kept inside the discovery placeholder jars (mixin classes,
@@ -210,7 +216,8 @@ public final class NeoModClassLoader {
      * then recurse into each extracted jar (bounded depth).
      */
     private static void extractJiJRecursively(Path jar, Path jijTemp, List<URL> urls,
-                                              List<Path> extractedJiJJars, java.util.Map<String, String> identities, int depth) {
+                                              List<Path> extractedJiJJars, java.util.Map<String, String> identities,
+                                              Map<String, JiJCandidate> selectedJiJ, int depth) {
         if (depth > 5) {
             throw new IllegalStateException("JiJ nesting exceeds supported depth: " + jar);
         }
@@ -223,7 +230,12 @@ public final class NeoModClassLoader {
                     try (InputStream is = jarFile.getInputStream(entry)) {
                         byte[] bytes = is.readAllBytes();
                         String digest = sha256(bytes);
-                        String identity = nestedIdentity(jarFile, name, fileName);
+                        JiJDescriptor descriptor = nestedDescriptor(jarFile, name, fileName);
+                        String identity = descriptor.identity();
+                        JiJCandidate selected = selectedJiJ.get(identity);
+                        if (selected != null && !selected.digest().equals(digest)) {
+                            continue;
+                        }
                         String previousDigest = identities.putIfAbsent(identity, digest);
                         if (previousDigest != null) {
                             if (previousDigest.equals(digest)) continue;
@@ -250,13 +262,98 @@ public final class NeoModClassLoader {
             throw new IllegalStateException("Cannot extract JiJ dependencies from " + jar, e);
         }
         for (Path nested : extractedHere) {
-            extractJiJRecursively(nested, jijTemp, urls, extractedJiJJars, identities, depth + 1);
+            extractJiJRecursively(nested, jijTemp, urls, extractedJiJJars, identities, selectedJiJ, depth + 1);
         }
     }
 
-    private static String nestedIdentity(JarFile jar, String entryName, String fallback) throws java.io.IOException {
+    private record JiJDescriptor(String identity, String version, String range) {}
+    private record JiJCandidate(String identity, String version, String range, String digest,
+                                Path owner, String entryName) {}
+
+    private static Map<String, JiJCandidate> selectJiJCandidates(List<Path> jars) {
+        Map<String, List<JiJCandidate>> candidates = new HashMap<>();
+        for (Path owner : jars.stream().sorted(Comparator.comparing(Path::toString)).toList()) {
+            try (JarFile jar = new JarFile(owner.toFile())) {
+                for (JarEntry entry : jar.stream().filter(e -> e.getName().startsWith("META-INF/jarjar/")
+                        && e.getName().endsWith(".jar") && !e.isDirectory())
+                        .sorted(Comparator.comparing(JarEntry::getName)).toList()) {
+                    byte[] bytes;
+                    try (InputStream input = jar.getInputStream(entry)) {
+                        bytes = input.readAllBytes();
+                    }
+                    String fileName = entry.getName().substring(entry.getName().lastIndexOf('/') + 1);
+                    JiJDescriptor descriptor = nestedDescriptor(jar, entry.getName(), fileName);
+                    JiJCandidate candidate = new JiJCandidate(descriptor.identity(), descriptor.version(),
+                            descriptor.range(), sha256(bytes), owner, entry.getName());
+                    candidates.computeIfAbsent(candidate.identity(), ignored -> new ArrayList<>()).add(candidate);
+                }
+            } catch (Exception e) {
+                throw new IllegalStateException("Cannot inspect JiJ metadata from " + owner, e);
+            }
+        }
+
+        Map<String, JiJCandidate> selected = new HashMap<>();
+        for (Map.Entry<String, List<JiJCandidate>> entry : candidates.entrySet()) {
+            List<JiJCandidate> group = entry.getValue();
+            JiJCandidate first = group.getFirst();
+            boolean sameContent = group.stream().allMatch(candidate -> candidate.digest().equals(first.digest()));
+            if (sameContent) {
+                boolean hasVersion = group.stream().allMatch(candidate -> candidate.version() != null && !candidate.version().isBlank());
+                boolean hasRange = group.stream().anyMatch(candidate -> candidate.range() != null && !candidate.range().isBlank()
+                        && !candidate.range().equals("*"));
+                if (hasRange && !hasVersion) {
+                    throw new IllegalStateException("Embedded dependency " + entry.getKey()
+                            + " has version ranges but no complete version metadata");
+                }
+                List<JiJCandidate> matching = hasVersion ? group.stream()
+                        .filter(candidate -> satisfiesAllRanges(candidate, group)).toList() : group;
+                if (matching.isEmpty()) {
+                    throw new IllegalStateException("No embedded dependency version satisfies all ranges for " + entry.getKey());
+                }
+                JiJCandidate winner = hasVersion
+                        ? matching.stream().max(NeoModClassLoader::compareJiJCandidates).orElse(first)
+                        : matching.stream().min(Comparator.comparing(c -> c.owner().toString() + "!" + c.entryName())).orElse(first);
+                selected.put(entry.getKey(), winner);
+                continue;
+            }
+
+            if (group.stream().anyMatch(candidate -> candidate.version() == null || candidate.version().isBlank())) {
+                throw new IllegalStateException("Conflicting embedded dependency " + entry.getKey()
+                        + " has no complete version metadata");
+            }
+            List<JiJCandidate> matching = group.stream().filter(candidate -> satisfiesAllRanges(candidate, group)).toList();
+            if (matching.isEmpty()) {
+                throw new IllegalStateException("No embedded dependency version satisfies all ranges for " + entry.getKey());
+            }
+            JiJCandidate winner = matching.stream().max(NeoModClassLoader::compareJiJCandidates).orElseThrow();
+            selected.put(entry.getKey(), winner);
+        }
+        return selected;
+    }
+
+    private static int compareJiJCandidates(JiJCandidate left, JiJCandidate right) {
+        int version = new DefaultArtifactVersion(left.version()).compareTo(new DefaultArtifactVersion(right.version()));
+        if (version != 0) return version;
+        return (right.owner().toString() + "!" + right.entryName()).compareTo(left.owner().toString() + "!" + left.entryName());
+    }
+
+    private static boolean satisfiesAllRanges(JiJCandidate candidate, List<JiJCandidate> group) {
+        DefaultArtifactVersion version = new DefaultArtifactVersion(candidate.version());
+        for (JiJCandidate requirement : group) {
+            String range = requirement.range();
+            if (range == null || range.isBlank() || range.equals("*")) continue;
+            try {
+                if (!VersionRange.createFromVersionSpec(range).containsVersion(version)) return false;
+            } catch (Exception e) {
+                throw new IllegalStateException("Invalid JiJ version range '" + range + "' for " + candidate.identity(), e);
+            }
+        }
+        return true;
+    }
+
+    private static JiJDescriptor nestedDescriptor(JarFile jar, String entryName, String fallback) throws java.io.IOException {
         JarEntry metadata = jar.getJarEntry("META-INF/jarjar/metadata.json");
-        if (metadata == null) return fallback;
+        if (metadata == null) return new JiJDescriptor(fallback, null, null);
         try (InputStream input = jar.getInputStream(metadata)) {
             var entries = com.google.gson.JsonParser.parseString(new String(input.readAllBytes(), StandardCharsets.UTF_8))
                     .getAsJsonObject().getAsJsonArray("jars");
@@ -264,7 +361,10 @@ public final class NeoModClassLoader {
                 var item = candidate.getAsJsonObject();
                 if (entryName.equals(item.get("path").getAsString())) {
                     var identifier = item.getAsJsonObject("identifier");
-                    return identifier.get("group").getAsString() + ":" + identifier.get("artifact").getAsString();
+                    var version = item.has("version") ? item.getAsJsonObject("version") : null;
+                    return new JiJDescriptor(identifier.get("group").getAsString() + ":" + identifier.get("artifact").getAsString(),
+                            version != null && version.has("artifactVersion") ? version.get("artifactVersion").getAsString() : null,
+                            version != null && version.has("range") ? version.get("range").getAsString() : null);
                 }
             }
             throw new IllegalStateException("Embedded JAR missing from JiJ metadata: " + entryName);

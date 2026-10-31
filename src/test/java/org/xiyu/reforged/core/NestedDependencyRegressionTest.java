@@ -35,6 +35,21 @@ class NestedDependencyRegressionTest {
         return path;
     }
 
+    Path versionedParent(String name, String child, byte[] bytes, String range, String artifactVersion) throws Exception {
+        Path path = dir.resolve(name);
+        String entry = "META-INF/jarjar/" + child;
+        String metadata = "{\"jars\":[{\"path\":\"" + entry
+                + "\",\"identifier\":{\"group\":\"fixture\",\"artifact\":\"library\"}"
+                + ",\"version\":{\"range\":\"" + range + "\",\"artifactVersion\":\""
+                + artifactVersion + "\"}}]}";
+        try (var output = new JarOutputStream(Files.newOutputStream(path))) {
+            output.putNextEntry(new JarEntry(entry)); output.write(bytes); output.closeEntry();
+            output.putNextEntry(new JarEntry("META-INF/jarjar/metadata.json"));
+            output.write(metadata.getBytes(StandardCharsets.UTF_8)); output.closeEntry();
+        }
+        return path;
+    }
+
     Path modJar(String name, String resource) throws Exception {
         Path path = dir.resolve(name);
         try (var output = new JarOutputStream(Files.newOutputStream(path))) {
@@ -88,6 +103,35 @@ class NestedDependencyRegressionTest {
                 }
             }
         });
+    }
+
+    @Test void selectsHighestVersionSatisfyingAllRangesIndependentOfInputOrder() throws Throwable {
+        Path older = versionedParent("older.jar", "library-1.jar", library("A"), "[1,3)", "1.0.0");
+        Path newer = versionedParent("newer.jar", "library-2.jar", library("B"), "[1,3)", "2.0.0");
+        inIsolatedCache(() -> {
+            String selected = null;
+            for (var paths : List.of(List.of(older, newer), List.of(newer, older))) {
+                List<Path> extracted = new ArrayList<>();
+                try (var loader = NeoModClassLoader.createClassLoader(paths, getClass().getClassLoader(), extracted)) {
+                    assertNotNull(loader); assertEquals(1, extracted.size());
+                }
+                Path chosen = extracted.getFirst();
+                try (var jar = new JarFile(chosen.toFile())) {
+                    try (var input = jar.getInputStream(jar.getJarEntry("library.txt"))) {
+                        assertEquals("B", new String(input.readAllBytes(), StandardCharsets.UTF_8));
+                    }
+                }
+                if (selected != null) assertEquals(selected, chosen.getFileName().toString());
+                selected = chosen.getFileName().toString();
+            }
+        });
+    }
+
+    @Test void disjointVersionRangesRejectAllCandidates() throws Throwable {
+        Path older = versionedParent("older.jar", "library-1.jar", library("A"), "[1,2)", "1.0.0");
+        Path newer = versionedParent("newer.jar", "library-2.jar", library("B"), "[2,3)", "2.0.0");
+        inIsolatedCache(() -> assertNull(NeoModClassLoader.createClassLoader(List.of(older, newer),
+                getClass().getClassLoader(), null)));
     }
 
     @Test void corruptEmbeddedLibraryRejectsIncompleteClassLoader() throws Throwable {
