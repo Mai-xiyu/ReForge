@@ -12,15 +12,20 @@ import net.minecraft.world.level.chunk.storage.ChunkSerializer;
 import net.minecraft.world.level.chunk.storage.RegionStorageInfo;
 import net.minecraftforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.attachment.*;
+import net.neoforged.neoforge.common.extensions.IEntityExtension;
 import org.xiyu.reforged.bridge.NeoAttachmentHolderBridge;
 
 @GameTestHolder("reforged")
 public final class AttachmentGameTests {
     private static final AttachmentType<Integer> DATA=AttachmentType.builder(() -> 0).serialize(Codec.INT).build();
     private static final AttachmentType<Integer> RESTART_DATA=AttachmentType.builder(() -> 0).serialize(Codec.INT).build();
+    private static final AttachmentType<Integer> DEATH_DATA=AttachmentType.builder(() -> 0).serialize(Codec.INT).copyOnDeath().build();
+    private static final AttachmentType<Integer> TRANSIENT_DATA=AttachmentType.builder(() -> 0).serialize(Codec.INT).build();
     static {
         AttachmentType.register("reforged:gametest_data",DATA);
         AttachmentType.register("reforged:gametest_restart",RESTART_DATA);
+        AttachmentType.register("reforged:gametest_death",DEATH_DATA);
+        AttachmentType.register("reforged:gametest_transient",TRANSIENT_DATA);
     }
 
     @GameTest(template="forge:empty3x3x3")
@@ -32,6 +37,36 @@ public final class AttachmentGameTests {
         CompoundTag saved=entity.saveWithoutId(new CompoundTag());
         holder.removeData(DATA); entity.load(saved);
         helper.assertTrue(holder.getData(DATA)==42,"Entity attachment did not survive save/load");
+        helper.succeed();
+    }
+
+    @GameTest(template="forge:empty3x3x3")
+    public static void entityDeathCopyHonorsOptIn(GameTestHelper helper) {
+        var source=helper.spawn(EntityType.PIG,new BlockPos(1,1,1));
+        var target=helper.spawn(EntityType.PIG,new BlockPos(2,1,1));
+        var sourceHolder=(IAttachmentHolder)source;
+        sourceHolder.setData(DEATH_DATA,701);
+        sourceHolder.setData(TRANSIENT_DATA,702);
+        ((IEntityExtension)target).copyAttachmentsFrom(source,true);
+        helper.assertTrue(((IAttachmentHolder)target).getExistingData(DEATH_DATA).orElse(-1)==701,
+                "Death-copy attachment was not copied");
+        helper.assertTrue(((IAttachmentHolder)target).getExistingData(TRANSIENT_DATA).isEmpty(),
+                "Non-opt-in attachment was copied during death");
+        helper.succeed();
+    }
+
+    @GameTest(template="forge:empty3x3x3")
+    public static void entityConversionCopiesAllSerializable(GameTestHelper helper) {
+        var source=helper.spawn(EntityType.PIG,new BlockPos(1,1,1));
+        var target=helper.spawn(EntityType.COW,new BlockPos(2,1,1));
+        var sourceHolder=(IAttachmentHolder)source;
+        sourceHolder.setData(DEATH_DATA,703);
+        sourceHolder.setData(TRANSIENT_DATA,704);
+        ((IEntityExtension)target).copyAttachmentsFrom(source,false);
+        helper.assertTrue(((IAttachmentHolder)target).getExistingData(DEATH_DATA).orElse(-1)==703,
+                "Serializable attachment was not copied during conversion");
+        helper.assertTrue(((IAttachmentHolder)target).getExistingData(TRANSIENT_DATA).orElse(-1)==704,
+                "Serializable attachment was not copied during conversion");
         helper.succeed();
     }
 

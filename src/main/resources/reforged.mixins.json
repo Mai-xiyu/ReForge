@@ -26,6 +26,7 @@
         "BlockEntityCapabilityMixin",
         "EntityCapabilityMixin",
         "EntityAttachmentMixin",
+        "EntityInjectedInterfaceMixin",
         "LevelChunkNeoAttachmentMixin",
         "ChunkAttachmentPersistenceMixin",
         "ChunkAttachmentPromotionMixin",

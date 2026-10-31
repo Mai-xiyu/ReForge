@@ -43,7 +43,7 @@ Windows 实测发现 Forge 早期服务扫描会打开原始 NeoForge JAR，原�
 
 `verifyReleaseJar` 校验外层服务声明、包隔离、映射与许可证，以及内层 Mod 描述、Mixin 配置、MixinExtras 和测试类隔离，生成 SHA-256 文件。归档固定条目顺序与时间戳，manifest 移除构建时间。
 
-CI 已配置编译、JUnit、发布结构校验、强制重打包摘要比较，以及同一独立世界的写入/重启读取测试；保留测试报告和日志。JUnit 0 执行数和 GameTest 未执行、旧日志或不足 7 个通过都使构建失败。远端 CI 结果以 GitHub Actions 为准，本地记录不代表远端通过。
+CI 已配置编译、JUnit、发布结构校验、强制重打包摘要比较，以及同一独立世界的写入/重启读取测试；保留测试报告和日志。JUnit 0 执行数和 GameTest 未执行、旧日志或不足 9 个通过都使构建失败。远端 CI 结果以 GitHub Actions 为准，本地记录不代表远端通过。
 
 `src/compatibilityTest/` 提供最小 NeoForge 模组及其内嵌依赖，走原始 JAR → 缓存占位包 → Forge 发现 → JiJ 提取 → 依赖排序 → 构造 → common setup 回调的完整链路，GameTest 断言两者实际初始化及事件回调。该夹具不进入发布包。`-PfixtureFailure=true` 在注册监听器后主动抛出构造异常，CI 要求启动失败且日志包含该明确原因。
 
@@ -72,6 +72,14 @@ CI 已配置编译、JUnit、发布结构校验、强制重打包摘要比较，
 | 制品与重复打包 | 结构门禁通过；同源码强制重打包 SHA-256 一致 | `build/reforge-reproducibility.log`、`build/libs/reforge-1.0.0.jar.sha256` |
 | 文档/工作流 | `git diff --check` 通过，工作流路径已同步；远端 CI 结果单独确认 | 本地命令结果 |
 
+本轮新增 GameTest 验证（2026-10-31，Windows / JDK 21.0.10）：
+
+| 验证 | 实际结果 | 本地证据 |
+| --- | --- | --- |
+| 实体死亡复制筛选 | `copyOnDeath` 附件复制，未选择附件不复制 | `build/smoke/gametest-lifecycle-2/logs/latest.log` |
+| 普通实体转换复制 | 两类可序列化附件均复制 | `build/smoke/gametest-lifecycle-2/logs/latest.log` |
+| 写入/新进程读取 | 两个阶段均 9/9 required GameTests 通过 | `build/smoke/gametest-lifecycle-2/logs/latest.log` |
+
 当前安装包 SHA-256：`e9fdbea98a364def65e99a9ffc9946052f7b3caa554c8d91ddcab7ce9fe8a444`。这是当前工具链同源码重打包的结果，尚未证明跨操作系统或独立干净构建环境的字节一致性。客户端/专服均通过 ForgeGradle userdev 启动并使用启动包定位流程，独立 Forge 安装器环境仍需另验。
 
 ## Issue 修复
@@ -95,7 +103,7 @@ PR #6 中的 Shadow 打包不能替代运行时字节码转换；当前采用启
 | --- | --- | --- |
 | 1 | 第三方客户端与 Jade 回归 | 已有最小夹具标题界面冒烟；继续对固定版本组合验证世界进入、tooltip、渲染和退出；必要客户端注册失败已阻断启动并完成最小故障注入，继续验收其他注册与渲染路径；失败定位到公共契约或限定版本补丁 |
 | 2 | 真实联机与原生差分 fixture | 客户端/专服验证 PLAY、CONFIGURATION、COMMON、MAIN/NETWORK；错误版本/方向/阶段/缺失必要通道拒绝；原生 NeoForge 与桥接环境比较事件轨迹和线程 |
-| 3 | 扩展持久化与负载回归 | 已补充复制失败时内部容器不部分提交、未选目标值保留回归；继续真实死亡复制、维度转换、区块卸载重载、移除 Mod、未知附件、解码失败与多次重启；断言状态而非仅检查无崩溃 |
+| 3 | 扩展持久化与负载回归 | 已补充复制失败时内部容器不部分提交、未选目标值保留回归，并在专服 GameTest 验证死亡筛选复制和普通实体转换复制；继续真实玩家死亡、维度转换、区块卸载重载、移除 Mod、未知附件、解码失败与多次重启；断言状态而非仅检查无崩溃 |
 | 4 | JAR 完整事务与缓存完整性 | 已实现 discovery v3 完成记录，核验输入/转换器/输出摘要及原件备份；缓存损坏、记录缺失和备份异常可重建。继续对每个替换边界注入中断，不能覆盖用户更新或恢复主动删除的 Mod |
 | 5 | JiJ 版本选择 | 按坐标和所有需求范围选择唯一版本；交集为空时拒绝；选择不依赖扫描顺序。当前拒绝内容冲突，行为保守但确定 |
 | 6 | 自动附件网络同步 | 跟踪、取消跟踪、默认值、删除、过滤及 codec 契约都通过两端断言后再开放 `Builder.sync`；当前调用明确拒绝 |
@@ -115,6 +123,7 @@ Issue 跟踪：[#1 网络契约 fixture](https://github.com/Mai-xiyu/ReForge/iss
 - 附件复制先收集所有结果，再写入目标容器；后续复制处理器失败不提交前面的值。此保证限于容器写入，不回滚自定义处理器自行产生的副作用；并发访问仍遵循游戏线程约束。额外暂存空间为 O(k)，k 为选中的附件数。
 - 中英文 README 重写，明确 vibecoding 开发方式；发布目录只保留 `reforge-1.0.0.jar` 与摘要。
 - 运行时附件 shim 与 NeoForge 门面对齐：默认值创建触发同步回调；未知 NBT 键在缺少 Mod 时保留；序列化和反序列化失败向上传播，反序列化在全部键成功后提交；复制先暂存全部结果，复制处理器失败不会部分写入；`copyOnDeath`、复制处理器和自动同步拒绝契约均有 JUnit 覆盖。源码历史、许可证、内部 ID 和作者排除契约保留。
+- GameTest 从 7 项扩展到 9 项：新增死亡复制筛选和普通实体转换复制。运行时发现 `EntityInjectedInterfaceMixin` 未注册，已加入 `reforged.mixins.json`；修复后写入与读取阶段均为 9/9 required tests 通过。证据目录：`build/smoke/gametest-lifecycle-2/`。这仍不等于真实玩家死亡、跨维度和长期运行已完成验收。
 
 ## Jade 客户端实测
 

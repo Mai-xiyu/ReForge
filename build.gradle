@@ -258,7 +258,7 @@ tasks.matching { it.name == 'runGameTestServer' }.configureEach {
         def log = reforgedRunDir.file('logs/latest.log').asFile
         if (!log.isFile() || log.lastModified() < startedAt) throw new GradleException('No fresh GameTest log')
         def result = log.getText('UTF-8') =~ /All (\d+) required tests passed/
-        if (!result.find() || result.group(1).toInteger() < 7) throw new GradleException('Required attachment and loading GameTests did not execute and pass')
+        if (!result.find() || result.group(1).toInteger() < 9) throw new GradleException('Required attachment and loading GameTests did not execute and pass')
         logger.lifecycle("Dedicated-server GameTests: ${result.group(1)} required tests passed")
     }
 }
