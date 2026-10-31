@@ -68,11 +68,18 @@ minecraft {
             property 'reforged.clientSmoke', providers.gradleProperty('clientSmoke').getOrElse('false')
             property 'reforged.jadeSmoke', providers.gradleProperty('jadeSmoke').getOrElse('false')
             property 'reforged.fixtureClientFailure', providers.gradleProperty('fixtureClientFailure').getOrElse('false')
+            def username = providers.gradleProperty('reforgedUsername').getOrNull()
+            if (username != null && !username.isBlank()) args '--username', username
+            def serverAddress = providers.gradleProperty('reforgedServerAddress').getOrNull()
+            def serverPort = providers.gradleProperty('reforgedServerPort').getOrElse('25565')
+            if (serverAddress != null && !serverAddress.isBlank()) args '--server', serverAddress, serverPort
         }
 
         server {
             property 'forge.enabledGameTestNamespaces', mod_id
             args '--nogui'
+            def serverPort = providers.gradleProperty('reforgedServerPort').getOrNull()
+            if (serverPort != null && !serverPort.isBlank()) args '--port', serverPort
         }
 
         gameTestServer {
